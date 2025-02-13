@@ -8,19 +8,27 @@ package translator
 import (
 	"errors"
 	"fmt"
-	"net"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
 
+	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	routev3 "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
+	hcmv3 "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
+	xdstype "github.com/envoyproxy/go-control-plane/envoy/type/v3"
 	"google.golang.org/protobuf/types/known/anypb"
+	"k8s.io/utils/ptr"
 
+	egv1a1 "github.com/envoyproxy/gateway/api/v1alpha1"
 	"github.com/envoyproxy/gateway/internal/ir"
+	"github.com/envoyproxy/gateway/internal/xds/types"
 )
 
 const (
-	defaultPort = 443
+	defaultHTTPSPort                uint64 = 443
+	defaultHTTPPort                 uint64 = 80
+	defaultExtServiceRequestTimeout        = 10 // 10 seconds
 )
 
 // urlCluster is a cluster that is created from a URL.
@@ -29,6 +37,7 @@ type urlCluster struct {
 	hostname     string
 	port         uint32
 	endpointType EndpointType
+	tls          bool
 }
 
 // url2Cluster returns a urlCluster from the provided url.
@@ -41,22 +50,24 @@ func url2Cluster(strURL string) (*urlCluster, error) {
 		return nil, err
 	}
 
-	if u.Scheme != "https" {
-		return nil, fmt.Errorf("unsupported URI scheme %s", u.Scheme)
+	var port uint64
+	if u.Scheme == "https" {
+		port = defaultHTTPSPort
+	} else {
+		port = defaultHTTPPort
 	}
 
-	port := defaultPort
 	if u.Port() != "" {
-		port, err = strconv.Atoi(u.Port())
+		port, err = strconv.ParseUint(u.Port(), 10, 32)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	name := fmt.Sprintf("%s_%d", strings.ReplaceAll(u.Hostname(), ".", "_"), port)
+	name := clusterName(u.Hostname(), uint32(port))
 
-	if ip := net.ParseIP(u.Hostname()); ip != nil {
-		if v4 := ip.To4(); v4 != nil {
+	if ip, err := netip.ParseAddr(u.Hostname()); err == nil {
+		if ip.Unmap().Is4() {
 			epType = EndpointTypeStatic
 		}
 	}
@@ -66,25 +77,26 @@ func url2Cluster(strURL string) (*urlCluster, error) {
 		hostname:     u.Hostname(),
 		port:         uint32(port),
 		endpointType: epType,
+		tls:          u.Scheme == "https",
 	}, nil
 }
 
+func clusterName(host string, port uint32) string {
+	return fmt.Sprintf("%s_%d", strings.ReplaceAll(host, ".", "_"), port)
+}
+
 // enableFilterOnRoute enables a filterType on the provided route.
-func enableFilterOnRoute(filterType string, route *routev3.Route, irRoute *ir.HTTPRoute) error {
+func enableFilterOnRoute(route *routev3.Route, filterName string) error {
 	if route == nil {
 		return errors.New("xds route is nil")
 	}
-	if irRoute == nil {
-		return errors.New("ir route is nil")
-	}
 
-	filterName := perRouteFilterName(filterType, irRoute.Name)
 	filterCfg := route.GetTypedPerFilterConfig()
 	if _, ok := filterCfg[filterName]; ok {
 		// This should not happen since this is the only place where the filter
 		// config is added in a route.
 		return fmt.Errorf("route already contains filter config: %s, %+v",
-			filterType, route)
+			filterName, route)
 	}
 
 	// Enable the corresponding filter for this route.
@@ -104,6 +116,141 @@ func enableFilterOnRoute(filterType string, route *routev3.Route, irRoute *ir.HT
 	return nil
 }
 
-func perRouteFilterName(filterType, routeName string) string {
-	return fmt.Sprintf("%s_%s", filterType, routeName)
+// perRouteFilterName generates a unique filter name for the provided filterType and configName.
+func perRouteFilterName(filterType egv1a1.EnvoyFilter, configName string) string {
+	return fmt.Sprintf("%s/%s", filterType, configName)
+}
+
+func hcmContainsFilter(mgr *hcmv3.HttpConnectionManager, filterName string) bool {
+	for _, existingFilter := range mgr.HttpFilters {
+		if existingFilter.Name == filterName {
+			return true
+		}
+	}
+	return false
+}
+
+func createExtServiceXDSCluster(rd *ir.RouteDestination, traffic *ir.TrafficFeatures, tCtx *types.ResourceVersionTable) error {
+	var (
+		endpointType EndpointType
+		tSocket      *corev3.TransportSocket
+	)
+
+	// Make sure that there are safe defaults for the traffic
+	if traffic == nil {
+		traffic = &ir.TrafficFeatures{}
+	}
+	// Get the address type from the first setting.
+	// This is safe because no mixed address types in the settings.
+	addrTypeState := rd.Settings[0].AddressType
+	if addrTypeState != nil && *addrTypeState == ir.FQDN {
+		endpointType = EndpointTypeDNS
+	} else {
+		endpointType = EndpointTypeStatic
+	}
+	return addXdsCluster(tCtx, &xdsClusterArgs{
+		name:              rd.Name,
+		settings:          rd.Settings,
+		tSocket:           tSocket,
+		loadBalancer:      traffic.LoadBalancer,
+		proxyProtocol:     traffic.ProxyProtocol,
+		circuitBreaker:    traffic.CircuitBreaker,
+		healthCheck:       traffic.HealthCheck,
+		timeout:           traffic.Timeout,
+		tcpkeepalive:      traffic.TCPKeepalive,
+		backendConnection: traffic.BackendConnection,
+		endpointType:      endpointType,
+		dns:               traffic.DNS,
+		http2Settings:     traffic.HTTP2,
+	})
+}
+
+// addClusterFromURL adds a cluster to the resource version table from the provided URL.
+func addClusterFromURL(url string, tCtx *types.ResourceVersionTable) error {
+	var (
+		uc      *urlCluster
+		ds      *ir.DestinationSetting
+		tSocket *corev3.TransportSocket
+		err     error
+	)
+
+	if uc, err = url2Cluster(url); err != nil {
+		return err
+	}
+
+	ds = &ir.DestinationSetting{
+		Weight:    ptr.To[uint32](1),
+		Endpoints: []*ir.DestinationEndpoint{ir.NewDestEndpoint(uc.hostname, uc.port, false)},
+	}
+
+	clusterArgs := &xdsClusterArgs{
+		name:         uc.name,
+		settings:     []*ir.DestinationSetting{ds},
+		endpointType: uc.endpointType,
+	}
+	if uc.tls {
+		if tSocket, err = buildXdsUpstreamTLSSocket(uc.hostname); err != nil {
+			return err
+		}
+		clusterArgs.tSocket = tSocket
+	}
+
+	return addXdsCluster(tCtx, clusterArgs)
+}
+
+// determineIPFamily determines the IP family based on multiple destination settings
+func determineIPFamily(settings []*ir.DestinationSetting) *egv1a1.IPFamily {
+	// If there's only one setting, return its IPFamily directly
+	if len(settings) == 1 {
+		return settings[0].IPFamily
+	}
+
+	hasIPv4 := false
+	hasIPv6 := false
+	hasDualStack := false
+
+	for _, setting := range settings {
+		if setting.IPFamily == nil {
+			continue
+		}
+
+		switch *setting.IPFamily {
+		case egv1a1.IPv4:
+			hasIPv4 = true
+		case egv1a1.IPv6:
+			hasIPv6 = true
+		case egv1a1.DualStack:
+			hasDualStack = true
+		}
+	}
+
+	switch {
+	case hasDualStack:
+		return ptr.To(egv1a1.DualStack)
+	case hasIPv4 && hasIPv6:
+		return ptr.To(egv1a1.DualStack)
+	case hasIPv4:
+		return ptr.To(egv1a1.IPv4)
+	case hasIPv6:
+		return ptr.To(egv1a1.IPv6)
+	default:
+		return nil
+	}
+}
+
+// translatePercentToFractionalPercent translates a float to an envoy.type.FractionalPercent instance.
+func translatePercentToFractionalPercent(p *float32) *xdstype.FractionalPercent {
+	return &xdstype.FractionalPercent{
+		Numerator:   uint32(*p * 10000),
+		Denominator: xdstype.FractionalPercent_MILLION,
+	}
+}
+
+// translateIntegerToFractionalPercent translates an int32 instance to an
+// envoy.type.FractionalPercent instance.
+func translateIntegerToFractionalPercent(p int32) *xdstype.FractionalPercent {
+	return &xdstype.FractionalPercent{
+		Numerator:   uint32(p),
+		Denominator: xdstype.FractionalPercent_HUNDRED,
+	}
 }

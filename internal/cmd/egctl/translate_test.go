@@ -18,18 +18,16 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 
+	"github.com/envoyproxy/gateway/internal/gatewayapi/resource"
 	"github.com/envoyproxy/gateway/internal/utils/field"
 	"github.com/envoyproxy/gateway/internal/utils/file"
 )
 
-var (
-	overrideTestData = flag.Bool("override-testdata", false, "if override the test output data.")
-)
+var overrideTestData = flag.Bool("override-testdata", false, "if override the test output data.")
 
 func TestTranslate(t *testing.T) {
 	testCases := []struct {
@@ -184,7 +182,7 @@ func TestTranslate(t *testing.T) {
 			to:           "xds",
 			output:       yamlOutput,
 			resourceType: string(AllEnvoyConfigType),
-			expect:       true,
+			expect:       false,
 		},
 		{
 			name:      "default-resources",
@@ -192,6 +190,13 @@ func TestTranslate(t *testing.T) {
 			to:        "gateway-api,xds",
 			expect:    true,
 			extraArgs: []string{"--add-missing-resources"},
+		},
+		{
+			name:   "quickstart",
+			from:   "gateway-api",
+			to:     "ir",
+			output: yamlOutput,
+			expect: true,
 		},
 		{
 			name:         "quickstart",
@@ -276,16 +281,27 @@ func TestTranslate(t *testing.T) {
 			to:     "gateway-api",
 			expect: false,
 		},
+		{
+			name:      "no-service-cluster-ip",
+			from:      "gateway-api",
+			to:        "xds",
+			expect:    true,
+			extraArgs: []string{"--add-missing-resources"},
+		},
+		{
+			name:   "backend-endpoint",
+			from:   "gateway-api",
+			to:     "gateway-api",
+			expect: true,
+		},
 	}
 
 	flag.Parse()
 
 	for _, tc := range testCases {
-		tc := tc
-
 		t.Run(tc.name+"|"+tc.resourceType, func(t *testing.T) {
 			b := bytes.NewBufferString("")
-			root := NewTranslateCommand()
+			root := newTranslateCommand()
 			root.SetOut(b)
 			root.SetErr(b)
 			args := []string{
@@ -318,14 +334,14 @@ func TestTranslate(t *testing.T) {
 
 			root.SetArgs(args)
 			if tc.expect {
-				assert.NoError(t, root.ExecuteContext(context.Background()))
+				require.NoError(t, root.ExecuteContext(context.Background()))
 			} else {
-				assert.Error(t, root.ExecuteContext(context.Background()))
+				require.Error(t, root.ExecuteContext(context.Background()))
 				return
 			}
 
 			out, err := io.ReadAll(b)
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			got := &TranslationResult{}
 			mustUnmarshal(t, out, got)
 			var fn string
@@ -345,9 +361,20 @@ func TestTranslate(t *testing.T) {
 			}
 			want := &TranslationResult{}
 			mustUnmarshal(t, requireTestDataOutFile(t, fn), want)
-			opts := cmpopts.IgnoreFields(metav1.Condition{}, "LastTransitionTime")
-			require.Empty(t, cmp.Diff(want, got, opts))
 
+			// Supported features are dynamic, instead of hard-coding them in the output files
+			// we define them here.
+			// Disabled until GatewayClass.Status.SupportedFeatures is stable
+			// if want.GatewayClass != nil {
+			//	want.GatewayClass.Status.SupportedFeatures = status.GatewaySupportedFeatures
+			// }
+
+			opts := []cmp.Option{
+				cmpopts.IgnoreFields(metav1.Condition{}, "LastTransitionTime"),
+				cmpopts.IgnoreFields(resource.Resources{}, "serviceMap"),
+			}
+
+			require.Empty(t, cmp.Diff(want, got, opts...))
 		})
 	}
 }

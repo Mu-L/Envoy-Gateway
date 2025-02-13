@@ -6,32 +6,17 @@
 package validation
 
 import (
-	// Register embed
-	_ "embed"
 	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
 	egv1a1 "github.com/envoyproxy/gateway/api/v1alpha1"
-	"github.com/envoyproxy/gateway/internal/utils/ptr"
-)
-
-var (
-	//go:embed testdata/valid-user-bootstrap.yaml
-	validUserBootstrap string
-	//go:embed testdata/merge-user-bootstrap.yaml
-	mergeUserBootstrap string
-	//go:embed testdata/missing-admin-address-user-bootstrap.yaml
-	missingAdminAddressUserBootstrap string
-	//go:embed testdata/different-dynamic-resources-user-bootstrap.yaml
-	differentDynamicResourcesUserBootstrap string
-	//go:embed testdata/different-xds-cluster-address-bootstrap.yaml
-	differentXdsClusterAddressBootstrap string
 )
 
 func TestValidateEnvoyProxy(t *testing.T) {
@@ -67,7 +52,7 @@ func TestValidateEnvoyProxy(t *testing.T) {
 				},
 				Spec: egv1a1.EnvoyProxySpec{
 					Provider: &egv1a1.EnvoyProxyProvider{
-						Type: egv1a1.ProviderTypeFile,
+						Type: egv1a1.ProviderTypeCustom,
 					},
 				},
 			},
@@ -213,6 +198,49 @@ func TestValidateEnvoyProxy(t *testing.T) {
 			},
 			expected: false,
 		},
+
+		{
+			name: "envoy service type 'LoadBalancer' with loadBalancerSourceRanges",
+			proxy: &egv1a1.EnvoyProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "test",
+					Name:      "test",
+				},
+				Spec: egv1a1.EnvoyProxySpec{
+					Provider: &egv1a1.EnvoyProxyProvider{
+						Type: egv1a1.ProviderTypeKubernetes,
+						Kubernetes: &egv1a1.EnvoyProxyKubernetesProvider{
+							EnvoyService: &egv1a1.KubernetesServiceSpec{
+								Type:                     egv1a1.GetKubernetesServiceType(egv1a1.ServiceTypeLoadBalancer),
+								LoadBalancerSourceRanges: []string{"1.1.1.1/32"},
+							},
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "non envoy service type 'LoadBalancer' with loadBalancerSourceRanges",
+			proxy: &egv1a1.EnvoyProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "test",
+					Name:      "test",
+				},
+				Spec: egv1a1.EnvoyProxySpec{
+					Provider: &egv1a1.EnvoyProxyProvider{
+						Type: egv1a1.ProviderTypeKubernetes,
+						Kubernetes: &egv1a1.EnvoyProxyKubernetesProvider{
+							EnvoyService: &egv1a1.KubernetesServiceSpec{
+								Type:                     egv1a1.GetKubernetesServiceType(egv1a1.ServiceTypeClusterIP),
+								LoadBalancerSourceRanges: []string{"1.1.1.1/32"},
+							},
+						},
+					},
+				},
+			},
+			expected: false,
+		},
 		{
 			name: "envoy service type 'LoadBalancer' with valid loadBalancerIP",
 			proxy: &egv1a1.EnvoyProxy{
@@ -276,83 +304,6 @@ func TestValidateEnvoyProxy(t *testing.T) {
 			},
 			expected: false,
 		},
-
-		{
-			name: "valid user bootstrap replace type",
-			proxy: &egv1a1.EnvoyProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Namespace: "test",
-					Name:      "test",
-				},
-				Spec: egv1a1.EnvoyProxySpec{
-					Bootstrap: &egv1a1.ProxyBootstrap{
-						Value: validUserBootstrap,
-					},
-				},
-			},
-			expected: true,
-		},
-		{
-			name: "valid user bootstrap merge type",
-			proxy: &egv1a1.EnvoyProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Namespace: "test",
-					Name:      "test",
-				},
-				Spec: egv1a1.EnvoyProxySpec{
-					Bootstrap: &egv1a1.ProxyBootstrap{
-						Type:  (*egv1a1.BootstrapType)(pointer.String(string(egv1a1.BootstrapTypeMerge))),
-						Value: mergeUserBootstrap,
-					},
-				},
-			},
-			expected: true,
-		},
-		{
-			name: "user bootstrap with missing admin address",
-			proxy: &egv1a1.EnvoyProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Namespace: "test",
-					Name:      "test",
-				},
-				Spec: egv1a1.EnvoyProxySpec{
-					Bootstrap: &egv1a1.ProxyBootstrap{
-						Value: missingAdminAddressUserBootstrap,
-					},
-				},
-			},
-			expected: false,
-		},
-		{
-			name: "user bootstrap with different dynamic resources",
-			proxy: &egv1a1.EnvoyProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Namespace: "test",
-					Name:      "test",
-				},
-				Spec: egv1a1.EnvoyProxySpec{
-					Bootstrap: &egv1a1.ProxyBootstrap{
-						Value: differentDynamicResourcesUserBootstrap,
-					},
-				},
-			},
-			expected: false,
-		},
-		{
-			name: "user bootstrap with different xds_cluster endpoint",
-			proxy: &egv1a1.EnvoyProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Namespace: "test",
-					Name:      "test",
-				},
-				Spec: egv1a1.EnvoyProxySpec{
-					Bootstrap: &egv1a1.ProxyBootstrap{
-						Value: differentXdsClusterAddressBootstrap,
-					},
-				},
-			},
-			expected: false,
-		},
 		{
 			name: "should invalid when accesslog enabled using Text format, but `text` field being empty",
 			proxy: &egv1a1.EnvoyProxy{
@@ -365,7 +316,7 @@ func TestValidateEnvoyProxy(t *testing.T) {
 						AccessLog: &egv1a1.ProxyAccessLog{
 							Settings: []egv1a1.ProxyAccessLogSetting{
 								{
-									Format: egv1a1.ProxyAccessLogFormat{
+									Format: &egv1a1.ProxyAccessLogFormat{
 										Type: egv1a1.ProxyAccessLogFormatTypeText,
 									},
 								},
@@ -388,9 +339,9 @@ func TestValidateEnvoyProxy(t *testing.T) {
 						AccessLog: &egv1a1.ProxyAccessLog{
 							Settings: []egv1a1.ProxyAccessLogSetting{
 								{
-									Format: egv1a1.ProxyAccessLogFormat{
+									Format: &egv1a1.ProxyAccessLogFormat{
 										Type: egv1a1.ProxyAccessLogFormatTypeText,
-										Text: pointer.String("[%START_TIME%]"),
+										Text: ptr.To("[%START_TIME%]"),
 									},
 									Sinks: []egv1a1.ProxyAccessLogSink{
 										{
@@ -404,7 +355,8 @@ func TestValidateEnvoyProxy(t *testing.T) {
 				},
 			},
 			expected: false,
-		}, {
+		},
+		{
 			name: "should invalid when metrics type is OpenTelemetry, but `OpenTelemetry` field being empty",
 			proxy: &egv1a1.EnvoyProxy{
 				ObjectMeta: metav1.ObjectMeta{
@@ -424,7 +376,8 @@ func TestValidateEnvoyProxy(t *testing.T) {
 				},
 			},
 			expected: false,
-		}, {
+		},
+		{
 			name: "should valid when metrics type is OpenTelemetry and `OpenTelemetry` field being not empty",
 			proxy: &egv1a1.EnvoyProxy{
 				ObjectMeta: metav1.ObjectMeta{
@@ -438,7 +391,7 @@ func TestValidateEnvoyProxy(t *testing.T) {
 								{
 									Type: egv1a1.MetricSinkTypeOpenTelemetry,
 									OpenTelemetry: &egv1a1.ProxyOpenTelemetrySink{
-										Host: "0.0.0.0",
+										Host: ptr.To("0.0.0.0"),
 										Port: 3217,
 									},
 								},
@@ -448,6 +401,363 @@ func TestValidateEnvoyProxy(t *testing.T) {
 				},
 			},
 			expected: true,
+		},
+		{
+			name: "should be valid when service patch is empty",
+			proxy: &egv1a1.EnvoyProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "test",
+					Name:      "test",
+				},
+				Spec: egv1a1.EnvoyProxySpec{
+					Provider: &egv1a1.EnvoyProxyProvider{
+						Type: egv1a1.ProviderTypeKubernetes,
+						Kubernetes: &egv1a1.EnvoyProxyKubernetesProvider{
+							EnvoyService: &egv1a1.KubernetesServiceSpec{
+								Patch: &egv1a1.KubernetesPatchSpec{
+									Value: apiextensionsv1.JSON{
+										Raw: []byte{},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "should be valid when deployment patch is empty",
+			proxy: &egv1a1.EnvoyProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "test",
+					Name:      "test",
+				},
+				Spec: egv1a1.EnvoyProxySpec{
+					Provider: &egv1a1.EnvoyProxyProvider{
+						Type: egv1a1.ProviderTypeKubernetes,
+						Kubernetes: &egv1a1.EnvoyProxyKubernetesProvider{
+							EnvoyDeployment: &egv1a1.KubernetesDeploymentSpec{
+								Patch: &egv1a1.KubernetesPatchSpec{
+									Value: apiextensionsv1.JSON{
+										Raw: []byte{},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "should be valid when pdb patch type and patch are empty",
+			proxy: &egv1a1.EnvoyProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "test",
+					Name:      "test",
+				},
+				Spec: egv1a1.EnvoyProxySpec{
+					Provider: &egv1a1.EnvoyProxyProvider{
+						Type: egv1a1.ProviderTypeKubernetes,
+						Kubernetes: &egv1a1.EnvoyProxyKubernetesProvider{
+							EnvoyPDB: &egv1a1.KubernetesPodDisruptionBudgetSpec{
+								Patch: &egv1a1.KubernetesPatchSpec{
+									Value: apiextensionsv1.JSON{
+										Raw: []byte{},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "should be valid when pdb patch and type are set",
+			proxy: &egv1a1.EnvoyProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "test",
+					Name:      "test",
+				},
+				Spec: egv1a1.EnvoyProxySpec{
+					Provider: &egv1a1.EnvoyProxyProvider{
+						Type: egv1a1.ProviderTypeKubernetes,
+						Kubernetes: &egv1a1.EnvoyProxyKubernetesProvider{
+							EnvoyPDB: &egv1a1.KubernetesPodDisruptionBudgetSpec{
+								Patch: &egv1a1.KubernetesPatchSpec{
+									Type: ptr.To(egv1a1.StrategicMerge),
+									Value: apiextensionsv1.JSON{
+										Raw: []byte("{}"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "should be invalid when pdb patch object is empty",
+			proxy: &egv1a1.EnvoyProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "test",
+					Name:      "test",
+				},
+				Spec: egv1a1.EnvoyProxySpec{
+					Provider: &egv1a1.EnvoyProxyProvider{
+						Type: egv1a1.ProviderTypeKubernetes,
+						Kubernetes: &egv1a1.EnvoyProxyKubernetesProvider{
+							EnvoyPDB: &egv1a1.KubernetesPodDisruptionBudgetSpec{
+								Patch: &egv1a1.KubernetesPatchSpec{
+									Type: ptr.To(egv1a1.StrategicMerge),
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "should be valid when pdb type not set",
+			proxy: &egv1a1.EnvoyProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "test",
+					Name:      "test",
+				},
+				Spec: egv1a1.EnvoyProxySpec{
+					Provider: &egv1a1.EnvoyProxyProvider{
+						Type: egv1a1.ProviderTypeKubernetes,
+						Kubernetes: &egv1a1.EnvoyProxyKubernetesProvider{
+							EnvoyPDB: &egv1a1.KubernetesPodDisruptionBudgetSpec{
+								Patch: &egv1a1.KubernetesPatchSpec{
+									Value: apiextensionsv1.JSON{
+										Raw: []byte("{}"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "should be valid when hpa patch and type are empty",
+			proxy: &egv1a1.EnvoyProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "test",
+					Name:      "test",
+				},
+				Spec: egv1a1.EnvoyProxySpec{
+					Provider: &egv1a1.EnvoyProxyProvider{
+						Type: egv1a1.ProviderTypeKubernetes,
+						Kubernetes: &egv1a1.EnvoyProxyKubernetesProvider{
+							EnvoyHpa: &egv1a1.KubernetesHorizontalPodAutoscalerSpec{
+								Patch: &egv1a1.KubernetesPatchSpec{
+									Value: apiextensionsv1.JSON{
+										Raw: []byte{},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "should be valid when hpa patch and type are set",
+			proxy: &egv1a1.EnvoyProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "test",
+					Name:      "test",
+				},
+				Spec: egv1a1.EnvoyProxySpec{
+					Provider: &egv1a1.EnvoyProxyProvider{
+						Type: egv1a1.ProviderTypeKubernetes,
+						Kubernetes: &egv1a1.EnvoyProxyKubernetesProvider{
+							EnvoyHpa: &egv1a1.KubernetesHorizontalPodAutoscalerSpec{
+								Patch: &egv1a1.KubernetesPatchSpec{
+									Type: ptr.To(egv1a1.StrategicMerge),
+									Value: apiextensionsv1.JSON{
+										Raw: []byte("{}"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "should be invalid when hpa patch object is empty",
+			proxy: &egv1a1.EnvoyProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "test",
+					Name:      "test",
+				},
+				Spec: egv1a1.EnvoyProxySpec{
+					Provider: &egv1a1.EnvoyProxyProvider{
+						Type: egv1a1.ProviderTypeKubernetes,
+						Kubernetes: &egv1a1.EnvoyProxyKubernetesProvider{
+							EnvoyHpa: &egv1a1.KubernetesHorizontalPodAutoscalerSpec{
+								Patch: &egv1a1.KubernetesPatchSpec{
+									Type: ptr.To(egv1a1.StrategicMerge),
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "should be valid when hpa type not set",
+			proxy: &egv1a1.EnvoyProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "test",
+					Name:      "test",
+				},
+				Spec: egv1a1.EnvoyProxySpec{
+					Provider: &egv1a1.EnvoyProxyProvider{
+						Type: egv1a1.ProviderTypeKubernetes,
+						Kubernetes: &egv1a1.EnvoyProxyKubernetesProvider{
+							EnvoyHpa: &egv1a1.KubernetesHorizontalPodAutoscalerSpec{
+								Patch: &egv1a1.KubernetesPatchSpec{
+									Value: apiextensionsv1.JSON{
+										Raw: []byte("{}"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "should invalid when deployment patch object is empty",
+			proxy: &egv1a1.EnvoyProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "test",
+					Name:      "test",
+				},
+				Spec: egv1a1.EnvoyProxySpec{
+					Provider: &egv1a1.EnvoyProxyProvider{
+						Type: egv1a1.ProviderTypeKubernetes,
+						Kubernetes: &egv1a1.EnvoyProxyKubernetesProvider{
+							EnvoyDeployment: &egv1a1.KubernetesDeploymentSpec{
+								Patch: &egv1a1.KubernetesPatchSpec{
+									Type: ptr.To(egv1a1.StrategicMerge),
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			name: "should valid when deployment patch type and object are both not empty",
+			proxy: &egv1a1.EnvoyProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "test",
+					Name:      "test",
+				},
+				Spec: egv1a1.EnvoyProxySpec{
+					Provider: &egv1a1.EnvoyProxyProvider{
+						Type: egv1a1.ProviderTypeKubernetes,
+						Kubernetes: &egv1a1.EnvoyProxyKubernetesProvider{
+							EnvoyDeployment: &egv1a1.KubernetesDeploymentSpec{
+								Patch: &egv1a1.KubernetesPatchSpec{
+									Type: ptr.To(egv1a1.StrategicMerge),
+									Value: apiextensionsv1.JSON{
+										Raw: []byte("{}"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "should valid when deployment patch type is empty and object is not empty",
+			proxy: &egv1a1.EnvoyProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "test",
+					Name:      "test",
+				},
+				Spec: egv1a1.EnvoyProxySpec{
+					Provider: &egv1a1.EnvoyProxyProvider{
+						Type: egv1a1.ProviderTypeKubernetes,
+						Kubernetes: &egv1a1.EnvoyProxyKubernetesProvider{
+							EnvoyDeployment: &egv1a1.KubernetesDeploymentSpec{
+								Patch: &egv1a1.KubernetesPatchSpec{
+									Value: apiextensionsv1.JSON{
+										Raw: []byte("{}"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "valid filter order",
+			proxy: &egv1a1.EnvoyProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "test",
+					Name:      "test",
+				},
+				Spec: egv1a1.EnvoyProxySpec{
+					FilterOrder: []egv1a1.FilterPosition{
+						{
+							Name:   egv1a1.EnvoyFilterOAuth2,
+							Before: ptr.To(egv1a1.EnvoyFilterJWTAuthn),
+						},
+						{
+							Name:  egv1a1.EnvoyFilterExtProc,
+							After: ptr.To(egv1a1.EnvoyFilterJWTAuthn),
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			name: "invalid filter order with circular dependency",
+			proxy: &egv1a1.EnvoyProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: "test",
+					Name:      "test",
+				},
+				Spec: egv1a1.EnvoyProxySpec{
+					FilterOrder: []egv1a1.FilterPosition{
+						{
+							Name:   egv1a1.EnvoyFilterOAuth2,
+							Before: ptr.To(egv1a1.EnvoyFilterJWTAuthn),
+						},
+						{
+							Name:   egv1a1.EnvoyFilterJWTAuthn,
+							Before: ptr.To(egv1a1.EnvoyFilterExtProc),
+						},
+						{
+							Name:   egv1a1.EnvoyFilterExtProc,
+							Before: ptr.To(egv1a1.EnvoyFilterOAuth2),
+						},
+					},
+				},
+			},
+			expected: false,
 		},
 	}
 
@@ -470,33 +780,31 @@ func TestEnvoyProxyProvider(t *testing.T) {
 			Provider: egv1a1.DefaultEnvoyProxyProvider(),
 		},
 	}
-	assert.True(t, envoyProxy.Spec.Provider != nil)
+	assert.NotNil(t, envoyProxy.Spec.Provider)
 
 	envoyProxyProvider := envoyProxy.GetEnvoyProxyProvider()
-	assert.True(t, envoyProxyProvider.Kubernetes == nil)
+	assert.Nil(t, envoyProxyProvider.Kubernetes)
 	assert.True(t, reflect.DeepEqual(envoyProxy.Spec.Provider, envoyProxyProvider))
 
 	envoyProxyKubeProvider := envoyProxyProvider.GetEnvoyProxyKubeProvider()
 
-	assert.True(t, envoyProxyProvider.Kubernetes != nil)
+	assert.NotNil(t, envoyProxyProvider.Kubernetes)
 	assert.True(t, reflect.DeepEqual(envoyProxyProvider.Kubernetes, envoyProxyKubeProvider))
 
 	envoyProxyProvider.GetEnvoyProxyKubeProvider()
 
-	assert.True(t, envoyProxyProvider.Kubernetes.EnvoyDeployment != nil)
+	assert.NotNil(t, envoyProxyProvider.Kubernetes.EnvoyDeployment)
 	assert.Equal(t, envoyProxyProvider.Kubernetes.EnvoyDeployment, egv1a1.DefaultKubernetesDeployment(egv1a1.DefaultEnvoyProxyImage))
-	assert.True(t, envoyProxyProvider.Kubernetes.EnvoyDeployment.Replicas != nil)
-	assert.Equal(t, envoyProxyProvider.Kubernetes.EnvoyDeployment.Replicas, egv1a1.DefaultKubernetesDeploymentReplicas())
-	assert.True(t, envoyProxyProvider.Kubernetes.EnvoyDeployment.Pod != nil)
+	assert.NotNil(t, envoyProxyProvider.Kubernetes.EnvoyDeployment.Pod)
 	assert.Equal(t, envoyProxyProvider.Kubernetes.EnvoyDeployment.Pod, egv1a1.DefaultKubernetesPod())
-	assert.True(t, envoyProxyProvider.Kubernetes.EnvoyDeployment.Container != nil)
+	assert.NotNil(t, envoyProxyProvider.Kubernetes.EnvoyDeployment.Container)
 	assert.Equal(t, envoyProxyProvider.Kubernetes.EnvoyDeployment.Container, egv1a1.DefaultKubernetesContainer(egv1a1.DefaultEnvoyProxyImage))
-	assert.True(t, envoyProxyProvider.Kubernetes.EnvoyDeployment.Container.Resources != nil)
+	assert.NotNil(t, envoyProxyProvider.Kubernetes.EnvoyDeployment.Container.Resources)
 	assert.Equal(t, envoyProxyProvider.Kubernetes.EnvoyDeployment.Container.Resources, egv1a1.DefaultResourceRequirements())
-	assert.True(t, envoyProxyProvider.Kubernetes.EnvoyDeployment.Container.Image != nil)
+	assert.NotNil(t, envoyProxyProvider.Kubernetes.EnvoyDeployment.Container.Image)
 	assert.Equal(t, envoyProxyProvider.Kubernetes.EnvoyDeployment.Container.Image, egv1a1.DefaultKubernetesContainerImage(egv1a1.DefaultEnvoyProxyImage))
 
-	assert.True(t, envoyProxyProvider.Kubernetes.EnvoyService != nil)
+	assert.NotNil(t, envoyProxyProvider.Kubernetes.EnvoyService)
 	assert.True(t, reflect.DeepEqual(envoyProxyProvider.Kubernetes.EnvoyService.Type, egv1a1.GetKubernetesServiceType(egv1a1.ServiceTypeLoadBalancer)))
 }
 

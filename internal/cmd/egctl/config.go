@@ -8,23 +8,24 @@ package egctl
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"sync"
 
 	adminv3 "github.com/envoyproxy/go-control-plane/envoy/admin/v3"
-	"github.com/tetratelabs/multierror"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	corev1 "k8s.io/api/core/v1"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/yaml"
 
 	"github.com/envoyproxy/gateway/internal/cmd/options"
 	"github.com/envoyproxy/gateway/internal/infrastructure/kubernetes/proxy"
 	kube "github.com/envoyproxy/gateway/internal/kubernetes"
+	"github.com/envoyproxy/gateway/internal/utils"
 )
 
 var (
@@ -36,8 +37,9 @@ var (
 )
 
 const (
-	adminPort     = 19000   // TODO: make this configurable until EG support
-	containerName = "envoy" // TODO: make this configurable until EG support
+	adminPort          = 19000   // TODO: make this configurable until EG support
+	rateLimitDebugPort = 6070    // TODO: make this configurable until EG support
+	containerName      = "envoy" // TODO: make this configurable until EG support
 )
 
 type aggregatedConfigDump map[string]map[string]protoreflect.ProtoMessage
@@ -77,16 +79,15 @@ func retrieveConfigDump(args []string, includeEds bool, configType envoyConfigTy
 	var wg sync.WaitGroup
 	wg.Add(len(pods))
 	for _, pod := range pods {
-		pod := pod
 		go func() {
-			fw, err := portForwarder(cli, pod)
+			fw, err := portForwarder(cli, pod, adminPort)
 			if err != nil {
-				errs = multierror.Append(errs, err)
+				errs = errors.Join(errs, err)
 				return
 			}
 
 			if err := fw.Start(); err != nil {
-				errs = multierror.Append(errs, err)
+				errs = errors.Join(errs, err)
 				return
 			}
 			defer fw.Stop()
@@ -94,7 +95,7 @@ func retrieveConfigDump(args []string, includeEds bool, configType envoyConfigTy
 
 			configDump, err := extractConfigDump(fw, includeEds, configType)
 			if err != nil {
-				errs = multierror.Append(errs, err)
+				errs = errors.Join(errs, err)
 				return
 			}
 
@@ -118,7 +119,7 @@ func fetchRunningEnvoyPods(c kube.CLIClient, nn types.NamespacedName, labelSelec
 
 	switch {
 	case allNamespaces:
-		namespaces, err := c.Kube().CoreV1().Namespaces().List(context.Background(), v1.ListOptions{})
+		namespaces, err := c.Kube().CoreV1().Namespaces().List(context.Background(), metav1.ListOptions{})
 		if err != nil {
 			return nil, err
 		}
@@ -168,7 +169,7 @@ func fetchRunningEnvoyPods(c kube.CLIClient, nn types.NamespacedName, labelSelec
 
 	podsNamespacedNames := []types.NamespacedName{}
 	for _, pod := range pods {
-		podNsName := types.NamespacedName{Namespace: pod.Namespace, Name: pod.Name}
+		podNsName := utils.NamespacedName(&pod)
 		if pod.Status.Phase != "Running" {
 			return podsNamespacedNames, fmt.Errorf("pod %s is not running", podNsName)
 		}
@@ -180,8 +181,8 @@ func fetchRunningEnvoyPods(c kube.CLIClient, nn types.NamespacedName, labelSelec
 }
 
 // portForwarder returns a port forwarder instance for a single Pod.
-func portForwarder(cli kube.CLIClient, nn types.NamespacedName) (kube.PortForwarder, error) {
-	fw, err := kube.NewLocalPortForwarder(cli, nn, 0, adminPort)
+func portForwarder(cli kube.CLIClient, nn types.NamespacedName, port int) (kube.PortForwarder, error) {
+	fw, err := kube.NewLocalPortForwarder(cli, nn, 0, port)
 	if err != nil {
 		return nil, err
 	}

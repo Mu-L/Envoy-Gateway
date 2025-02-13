@@ -1,6 +1,6 @@
 - address:
     socketAddress:
-      address: 0.0.0.0
+      address: '::'
       portValue: 10080
   defaultFilterChain:
     filters:
@@ -17,6 +17,7 @@
         - name: envoy.filters.http.router
           typedConfig:
             '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+            suppressEnvoyHeaders: true
         mergeSlashes: true
         normalizePath: true
         pathWithEscapedSlashesAction: UNESCAPE_AND_REDIRECT
@@ -25,7 +26,8 @@
             ads: {}
             resourceApiVersion: V3
           routeConfigName: first-listener
-        statPrefix: http
+        serverHeaderTransformation: PASS_THROUGH
+        statPrefix: http-10080
         tracing:
           clientSampling:
             value: 100
@@ -49,13 +51,13 @@
               '@type': type.googleapis.com/envoy.config.trace.v3.OpenTelemetryConfig
               grpcService:
                 envoyGrpc:
-                  authority: otel-collector.monitoring.svc.cluster.local
-                  clusterName: tracing|otel-collector.monitoring.svc.cluster.local|4317
+                  authority: otel-collector.default.svc.cluster.local
+                  clusterName: tracing-0
               serviceName: fake-name.fake-ns
           randomSampling:
             value: 90
-        upgradeConfigs:
-        - upgradeType: websocket
+          spawnUpstreamSpan: true
         useRemoteAddress: true
+    name: first-listener
   name: first-listener
   perConnectionBufferLimitBytes: 32768

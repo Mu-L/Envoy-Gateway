@@ -73,7 +73,6 @@ securityPolicies:
       group: gateway.networking.k8s.io
       kind: Gateway
       name: gateway-1
-      namespace: envoy-gateway
     jwt:
       providers:
       - name: example1
@@ -86,11 +85,11 @@ securityPolicies:
         - header: one-route-example-key
           claim: claim1
       - name: example2
-        issuer: https://two.example.com
+        issuer: http://two.example.com
         audiences:
         - two.foo.com
         remoteJWKS:
-          uri: https://two.example.com/jwt/public-key/jwks.json
+          uri: http://two.example.com/jwt/public-key/jwks.json
         claimToHeaders:
         - header: two-route-example-key
           claim: claim2
@@ -104,7 +103,6 @@ securityPolicies:
       group: gateway.networking.k8s.io
       kind: HTTPRoute
       name: httproute-1
-      namespace: default
     jwt:
       providers:
       - name: example3

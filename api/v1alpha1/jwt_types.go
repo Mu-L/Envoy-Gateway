@@ -7,6 +7,9 @@ package v1alpha1
 
 // JWT defines the configuration for JSON Web Token (JWT) authentication.
 type JWT struct {
+	// Optional determines whether a missing JWT is acceptable, defaulting to false if not specified.
+	// Note: Even if optional is set to true, JWT authentication will still fail if an invalid JWT is presented.
+	Optional *bool `json:"optional,omitempty"`
 
 	// Providers defines the JSON Web Token (JWT) authentication provider type.
 	// When multiple JWT providers are specified, the JWT is considered valid if
@@ -19,6 +22,7 @@ type JWT struct {
 }
 
 // JWTProvider defines how a JSON Web Token (JWT) can be verified.
+// +kubebuilder:validation:XValidation:rule="(has(self.recomputeRoute) && self.recomputeRoute) ? size(self.claimToHeaders) > 0 : true", message="claimToHeaders must be specified if recomputeRoute is enabled"
 type JWTProvider struct {
 	// Name defines a unique name for the JWT provider. A name can have a variety of forms,
 	// including RFC1123 subdomains, RFC 1123 labels, or RFC 1035 labels.
@@ -52,7 +56,16 @@ type JWTProvider struct {
 	// For examples, following config:
 	// The claim must be of type; string, int, double, bool. Array type claims are not supported
 	//
+	// +optional
 	ClaimToHeaders []ClaimToHeader `json:"claimToHeaders,omitempty"`
+
+	// RecomputeRoute clears the route cache and recalculates the routing decision.
+	// This field must be enabled if the headers generated from the claim are used for
+	// route matching decisions. If the recomputation selects a new route, features targeting
+	// the new matched route will be applied.
+	//
+	// +optional
+	RecomputeRoute *bool `json:"recomputeRoute,omitempty"`
 
 	// ExtractFrom defines different ways to extract the JWT token from HTTP request.
 	// If empty, it defaults to extract JWT token from the Authorization HTTP request header using Bearer schema
@@ -62,22 +75,32 @@ type JWTProvider struct {
 	ExtractFrom *JWTExtractor `json:"extractFrom,omitempty"`
 }
 
-// RemoteJWKS defines how to fetch and cache JSON Web Key Sets (JWKS) from a remote
-// HTTP/HTTPS endpoint.
+// RemoteJWKS defines how to fetch and cache JSON Web Key Sets (JWKS) from a remote HTTP/HTTPS endpoint.
+// +kubebuilder:validation:XValidation:rule="!has(self.backendRef)",message="BackendRefs must be used, backendRef is not supported."
+// +kubebuilder:validation:XValidation:rule="has(self.backendSettings)? (has(self.backendSettings.retry)?(has(self.backendSettings.retry.perRetry)? !has(self.backendSettings.retry.perRetry.timeout):true):true):true",message="Retry timeout is not supported."
+// +kubebuilder:validation:XValidation:rule="has(self.backendSettings)? (has(self.backendSettings.retry)?(has(self.backendSettings.retry.retryOn)? !has(self.backendSettings.retry.retryOn.httpStatusCodes):true):true):true",message="HTTPStatusCodes is not supported."
 type RemoteJWKS struct {
-	// URI is the HTTPS URI to fetch the JWKS. Envoy's system trust bundle is used to
-	// validate the server certificate.
+	// BackendRefs is used to specify the address of the Remote JWKS. The BackendRefs are optional, if not specified,
+	// the backend service is extracted from the host and port of the URI field.
+	//
+	// TLS configuration can be specified in a BackendTLSConfig resource and target the BackendRefs.
+	//
+	// Other settings for the connection to remote JWKS can be specified in the BackendSettings resource.
+	// Currently, only the retry policy is supported.
+	//
+	// +optional
+	BackendCluster `json:",inline"`
+
+	// URI is the HTTPS URI to fetch the JWKS. Envoy's system trust bundle is used to validate the server certificate.
+	// If a custom trust bundle is needed, it can be specified in a BackendTLSConfig resource and target the BackendRefs.
 	//
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	URI string `json:"uri"`
-
-	// TODO: Add TBD remote JWKS fields based on defined use cases.
 }
 
 // ClaimToHeader defines a configuration to convert JWT claims into HTTP headers
 type ClaimToHeader struct {
-
 	// Header defines the name of the HTTP request header that the JWT Claim will be saved into.
 	Header string `json:"header"`
 
@@ -88,10 +111,36 @@ type ClaimToHeader struct {
 }
 
 // JWTExtractor defines a custom JWT token extraction from HTTP request.
+// If specified, Envoy will extract the JWT token from the listed extractors (headers, cookies, or params) and validate each of them.
+// If any value extracted is found to be an invalid JWT, a 401 error will be returned.
 type JWTExtractor struct {
-	// Cookies represents a list of cookie names to extract the JWT token from.
-	// If specified, Envoy will extract the JWT token from the listed cookies and validate each of them.
-	// If any cookie is found to be an invalid JWT, a 401 error will be returned.
+	// Headers represents a list of HTTP request headers to extract the JWT token from.
 	//
+	// +optional
+	Headers []JWTHeaderExtractor `json:"headers,omitempty"`
+
+	// Cookies represents a list of cookie names to extract the JWT token from.
+	//
+	// +optional
 	Cookies []string `json:"cookies,omitempty"`
+
+	// Params represents a list of query parameters to extract the JWT token from.
+	//
+	// +optional
+	Params []string `json:"params,omitempty"`
+}
+
+// JWTHeaderExtractor defines an HTTP header location to extract JWT token
+type JWTHeaderExtractor struct {
+	// Name is the HTTP header name to retrieve the token
+	//
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// ValuePrefix is the prefix that should be stripped before extracting the token.
+	// The format would be used by Envoy like "{ValuePrefix}<TOKEN>".
+	// For example, "Authorization: Bearer <TOKEN>", then the ValuePrefix="Bearer " with a space at the end.
+	//
+	// +optional
+	ValuePrefix *string `json:"valuePrefix,omitempty"`
 }

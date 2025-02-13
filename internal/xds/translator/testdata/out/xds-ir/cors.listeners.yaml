@@ -1,6 +1,6 @@
 - address:
     socketAddress:
-      address: 0.0.0.0
+      address: '::'
       portValue: 10080
   defaultFilterChain:
     filters:
@@ -20,6 +20,7 @@
         - name: envoy.filters.http.router
           typedConfig:
             '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+            suppressEnvoyHeaders: true
         mergeSlashes: true
         normalizePath: true
         pathWithEscapedSlashesAction: UNESCAPE_AND_REDIRECT
@@ -28,9 +29,9 @@
             ads: {}
             resourceApiVersion: V3
           routeConfigName: first-listener
-        statPrefix: http
-        upgradeConfigs:
-        - upgradeType: websocket
+        serverHeaderTransformation: PASS_THROUGH
+        statPrefix: http-10080
         useRemoteAddress: true
+    name: first-listener
   name: first-listener
   perConnectionBufferLimitBytes: 32768

@@ -10,6 +10,7 @@ import (
 	"github.com/google/go-cmp/cmp/cmpopts"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	egv1a1 "github.com/envoyproxy/gateway/api/v1alpha1"
 )
@@ -27,6 +28,9 @@ func ExpectedServiceSpec(service *egv1a1.KubernetesServiceSpec) corev1.ServiceSp
 	serviceSpec := corev1.ServiceSpec{}
 	serviceSpec.Type = corev1.ServiceType(*service.Type)
 	serviceSpec.SessionAffinity = corev1.ServiceAffinityNone
+	if service.ExternalTrafficPolicy == nil {
+		service.ExternalTrafficPolicy = egv1a1.DefaultKubernetesServiceExternalTrafficPolicy()
+	}
 	if *service.Type == egv1a1.ServiceTypeLoadBalancer {
 		if service.LoadBalancerClass != nil {
 			serviceSpec.LoadBalancerClass = service.LoadBalancerClass
@@ -34,24 +38,28 @@ func ExpectedServiceSpec(service *egv1a1.KubernetesServiceSpec) corev1.ServiceSp
 		if service.AllocateLoadBalancerNodePorts != nil {
 			serviceSpec.AllocateLoadBalancerNodePorts = service.AllocateLoadBalancerNodePorts
 		}
+		if len(service.LoadBalancerSourceRanges) > 0 {
+			serviceSpec.LoadBalancerSourceRanges = service.LoadBalancerSourceRanges
+		}
 		if service.LoadBalancerIP != nil {
 			serviceSpec.LoadBalancerIP = *service.LoadBalancerIP
 		}
-		// Preserve the client source IP and avoid a second hop for LoadBalancer.
-		serviceSpec.ExternalTrafficPolicy = corev1.ServiceExternalTrafficPolicyTypeLocal
+		serviceSpec.ExternalTrafficPolicy = corev1.ServiceExternalTrafficPolicy(*service.ExternalTrafficPolicy)
 	}
+
 	return serviceSpec
 }
 
-// CompareSvc compare entire Svc.Spec but ignored the ports[*].nodePort, ClusterIP and ClusterIPs in case user have modified for some scene.
+// CompareSvc compares the Service resource and ignores specific fields that may have been modified by other actors.
 func CompareSvc(currentSvc, originalSvc *corev1.Service) bool {
 	return cmp.Equal(currentSvc.Spec, originalSvc.Spec,
 		cmpopts.IgnoreFields(corev1.ServicePort{}, "NodePort"),
-		cmpopts.IgnoreFields(corev1.ServiceSpec{}, "ClusterIP", "ClusterIPs"))
+		cmpopts.IgnoreFields(corev1.ServiceSpec{}, "ClusterIP", "ClusterIPs"),
+		cmpopts.IgnoreFields(metav1.ObjectMeta{}, "Finalizers"))
 }
 
-// ExpectedProxyContainerEnv returns expected container envs.
-func ExpectedProxyContainerEnv(container *egv1a1.KubernetesContainerSpec, env []corev1.EnvVar) []corev1.EnvVar {
+// ExpectedContainerEnv returns expected container envs.
+func ExpectedContainerEnv(container *egv1a1.KubernetesContainerSpec, env []corev1.EnvVar) []corev1.EnvVar {
 	amendFunc := func(envVar corev1.EnvVar) {
 		for index, e := range env {
 			if e.Name == envVar.Name {
@@ -69,8 +77,8 @@ func ExpectedProxyContainerEnv(container *egv1a1.KubernetesContainerSpec, env []
 	return env
 }
 
-// ExpectedDeploymentVolumes returns expected deployment volumes.
-func ExpectedDeploymentVolumes(pod *egv1a1.KubernetesPodSpec, volumes []corev1.Volume) []corev1.Volume {
+// ExpectedVolumes returns expected deployment volumes.
+func ExpectedVolumes(pod *egv1a1.KubernetesPodSpec, volumes []corev1.Volume) []corev1.Volume {
 	amendFunc := func(volume corev1.Volume) {
 		for index, e := range volumes {
 			if e.Name == volume.Name {
@@ -107,4 +115,22 @@ func ExpectedContainerVolumeMounts(container *egv1a1.KubernetesContainerSpec, vo
 	}
 
 	return volumeMounts
+}
+
+// DefaultSecurityContext returns a default security context with minimal privileges.
+func DefaultSecurityContext() *corev1.SecurityContext {
+	return &corev1.SecurityContext{
+		AllowPrivilegeEscalation: ptr.To(false),
+		Capabilities: &corev1.Capabilities{
+			Drop: []corev1.Capability{
+				"ALL",
+			},
+		},
+		Privileged:             ptr.To(false),
+		ReadOnlyRootFilesystem: ptr.To(true),
+		RunAsNonRoot:           ptr.To(true),
+		SeccompProfile: &corev1.SeccompProfile{
+			Type: "RuntimeDefault",
+		},
+	}
 }

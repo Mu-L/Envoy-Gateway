@@ -1,6 +1,6 @@
 - address:
     socketAddress:
-      address: 0.0.0.0
+      address: '::'
       portValue: 10080
   defaultFilterChain:
     filters:
@@ -17,6 +17,7 @@
         - name: envoy.filters.http.router
           typedConfig:
             '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+            suppressEnvoyHeaders: true
         mergeSlashes: true
         normalizePath: true
         pathWithEscapedSlashesAction: UNESCAPE_AND_REDIRECT
@@ -25,10 +26,10 @@
             ads: {}
             resourceApiVersion: V3
           routeConfigName: first-listener
-        statPrefix: http
-        upgradeConfigs:
-        - upgradeType: websocket
+        serverHeaderTransformation: PASS_THROUGH
+        statPrefix: http-10080
         useRemoteAddress: true
+    name: first-listener
   name: first-listener
   perConnectionBufferLimitBytes: 32768
   socketOptions:
@@ -38,7 +39,7 @@
     name: "9"
 - address:
     socketAddress:
-      address: 0.0.0.0
+      address: '::'
       portValue: 10081
   defaultFilterChain:
     filters:
@@ -55,6 +56,7 @@
         - name: envoy.filters.http.router
           typedConfig:
             '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+            suppressEnvoyHeaders: true
         mergeSlashes: true
         normalizePath: true
         pathWithEscapedSlashesAction: UNESCAPE_AND_REDIRECT
@@ -63,10 +65,10 @@
             ads: {}
             resourceApiVersion: V3
           routeConfigName: second-listener
-        statPrefix: http
-        upgradeConfigs:
-        - upgradeType: websocket
+        serverHeaderTransformation: PASS_THROUGH
+        statPrefix: http-10081
         useRemoteAddress: true
+    name: second-listener
   name: second-listener
   perConnectionBufferLimitBytes: 32768
   socketOptions:
@@ -88,7 +90,7 @@
     name: "5"
 - address:
     socketAddress:
-      address: 0.0.0.0
+      address: '::'
       portValue: 10082
   filterChains:
   - filterChainMatch:
@@ -99,7 +101,7 @@
       typedConfig:
         '@type': type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
         cluster: tls-route-dest
-        statPrefix: passthrough
+        statPrefix: tls-passthrough-10082
   listenerFilters:
   - name: envoy.filters.listener.tls_inspector
     typedConfig:
@@ -113,7 +115,7 @@
     name: "9"
 - address:
     socketAddress:
-      address: 0.0.0.0
+      address: '::'
       portValue: 10083
   filterChains:
   - filters:
@@ -121,7 +123,7 @@
       typedConfig:
         '@type': type.googleapis.com/envoy.extensions.filters.network.tcp_proxy.v3.TcpProxy
         cluster: tcp-route-dest
-        statPrefix: tcp
+        statPrefix: tcp-10083
   name: fourth-listener
   perConnectionBufferLimitBytes: 32768
   socketOptions:

@@ -1,6 +1,6 @@
 - address:
     socketAddress:
-      address: 0.0.0.0
+      address: '::'
       portValue: 10080
   defaultFilterChain:
     filters:
@@ -21,24 +21,33 @@
               first-route/example:
                 audiences:
                 - foo.com
+                forward: true
                 fromCookies:
                 - session_access_token
+                fromHeaders:
+                - name: Authorization
+                  valuePrefix: 'Bearer '
+                fromParams:
+                - token
                 issuer: https://www.example.com
-                payloadInMetadata: https://www.example.com
+                normalizePayloadInMetadata:
+                  spaceDelimitedClaims:
+                  - scope
+                payloadInMetadata: example
                 remoteJwks:
                   asyncFetch: {}
                   cacheDuration: 300s
                   httpUri:
                     cluster: localhost_443
-                    timeout: 5s
+                    timeout: 10s
                     uri: https://localhost/jwt/public-key/jwks.json
-                  retryPolicy: {}
             requirementMap:
               first-route:
                 providerName: first-route/example
         - name: envoy.filters.http.router
           typedConfig:
             '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+            suppressEnvoyHeaders: true
         mergeSlashes: true
         normalizePath: true
         pathWithEscapedSlashesAction: UNESCAPE_AND_REDIRECT
@@ -47,9 +56,9 @@
             ads: {}
             resourceApiVersion: V3
           routeConfigName: first-listener
-        statPrefix: http
-        upgradeConfigs:
-        - upgradeType: websocket
+        serverHeaderTransformation: PASS_THROUGH
+        statPrefix: http-10080
         useRemoteAddress: true
+    name: first-listener
   name: first-listener
   perConnectionBufferLimitBytes: 32768

@@ -11,32 +11,37 @@ import (
 	discoveryv1 "k8s.io/api/discovery/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
 	gwapiv1a2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 
 	egv1a1 "github.com/envoyproxy/gateway/api/v1alpha1"
-	"github.com/envoyproxy/gateway/internal/utils/ptr"
 )
 
-type ObjectKindNamespacedName struct {
-	Kind      string
-	Namespace string
-	Name      string
+type GroupKindNamespacedName struct {
+	Group     gwapiv1.Group
+	Kind      gwapiv1.Kind
+	Namespace gwapiv1.Namespace
+	Name      gwapiv1.ObjectName
 }
 
-// NewEnvoyProxy returns an EnvoyProxy object with the provided ns/name.
-func NewEnvoyProxy(ns, name string) *egv1a1.EnvoyProxy {
+// GetEnvoyProxy returns an EnvoyProxy object with the provided ns/name.
+func GetEnvoyProxy(nsName types.NamespacedName, mergeGateways bool) *egv1a1.EnvoyProxy {
 	return &egv1a1.EnvoyProxy{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: ns,
-			Name:      name,
+			Name:      nsName.Name,
+			Namespace: nsName.Namespace,
+		},
+		Spec: egv1a1.EnvoyProxySpec{
+			MergeGateways: &mergeGateways,
 		},
 	}
 }
 
 // GetGatewayClass returns a sample GatewayClass.
-func GetGatewayClass(name string, controller gwapiv1.GatewayController) *gwapiv1.GatewayClass {
-	return &gwapiv1.GatewayClass{
+func GetGatewayClass(name string, controller gwapiv1.GatewayController, envoyProxy *GroupKindNamespacedName) *gwapiv1.GatewayClass {
+	gwc := &gwapiv1.GatewayClass{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
 		},
@@ -44,21 +49,32 @@ func GetGatewayClass(name string, controller gwapiv1.GatewayController) *gwapiv1
 			ControllerName: controller,
 		},
 	}
+
+	if envoyProxy != nil {
+		gwc.Spec.ParametersRef = &gwapiv1.ParametersReference{
+			Group:     envoyProxy.Group,
+			Kind:      envoyProxy.Kind,
+			Name:      string(envoyProxy.Name),
+			Namespace: &envoyProxy.Namespace,
+		}
+	}
+
+	return gwc
 }
 
 // GetGateway returns a sample Gateway with single listener.
-func GetGateway(nsname types.NamespacedName, gwclass string) *gwapiv1.Gateway {
+func GetGateway(nsName types.NamespacedName, gwclass string, listenerPort int32) *gwapiv1.Gateway {
 	return &gwapiv1.Gateway{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: nsname.Namespace,
-			Name:      nsname.Name,
+			Namespace: nsName.Namespace,
+			Name:      nsName.Name,
 		},
 		Spec: gwapiv1.GatewaySpec{
 			GatewayClassName: gwapiv1.ObjectName(gwclass),
 			Listeners: []gwapiv1.Listener{
 				{
 					Name:     "test",
-					Port:     gwapiv1.PortNumber(int32(8080)),
+					Port:     gwapiv1.PortNumber(listenerPort),
 					Protocol: gwapiv1.HTTPProtocolType,
 				},
 			},
@@ -67,14 +83,14 @@ func GetGateway(nsname types.NamespacedName, gwclass string) *gwapiv1.Gateway {
 }
 
 // GetSecureGateway returns a sample Gateway with single TLS listener.
-func GetSecureGateway(nsname types.NamespacedName, gwclass string, secretKindNSName ObjectKindNamespacedName) *gwapiv1.Gateway {
-	secureGateway := GetGateway(nsname, gwclass)
+func GetSecureGateway(nsName types.NamespacedName, gwclass string, secretKindNSName GroupKindNamespacedName) *gwapiv1.Gateway {
+	secureGateway := GetGateway(nsName, gwclass, 8080)
 	secureGateway.Spec.Listeners[0].TLS = &gwapiv1.GatewayTLSConfig{
 		Mode: ptr.To(gwapiv1.TLSModeTerminate),
 		CertificateRefs: []gwapiv1.SecretObjectReference{{
-			Kind:      (*gwapiv1.Kind)(&secretKindNSName.Kind),
-			Namespace: (*gwapiv1.Namespace)(&secretKindNSName.Namespace),
-			Name:      gwapiv1.ObjectName(secretKindNSName.Name),
+			Kind:      &secretKindNSName.Kind,
+			Namespace: &secretKindNSName.Namespace,
+			Name:      secretKindNSName.Name,
 		}},
 	}
 
@@ -82,18 +98,18 @@ func GetSecureGateway(nsname types.NamespacedName, gwclass string, secretKindNSN
 }
 
 // GetSecret returns a sample Secret object.
-func GetSecret(nsname types.NamespacedName) *corev1.Secret {
+func GetSecret(nsName types.NamespacedName) *corev1.Secret {
 	return &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: nsname.Namespace,
-			Name:      nsname.Name,
+			Namespace: nsName.Namespace,
+			Name:      nsName.Name,
 		},
 	}
 }
 
 // GetHTTPRoute returns a sample HTTPRoute with a parent reference.
-func GetHTTPRoute(nsName types.NamespacedName, parent string, serviceName types.NamespacedName, port int32) *gwapiv1.HTTPRoute {
-	return &gwapiv1.HTTPRoute{
+func GetHTTPRoute(nsName types.NamespacedName, parent string, serviceName types.NamespacedName, port int32, httpRouteFilterName string) *gwapiv1.HTTPRoute {
+	httpRoute := &gwapiv1.HTTPRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: nsName.Namespace,
 			Name:      nsName.Name,
@@ -120,24 +136,39 @@ func GetHTTPRoute(nsName types.NamespacedName, parent string, serviceName types.
 			},
 		},
 	}
+
+	if httpRouteFilterName != "" {
+		httpRoute.Spec.Rules[0].Filters = []gwapiv1.HTTPRouteFilter{
+			{
+				Type: gwapiv1.HTTPRouteFilterExtensionRef,
+				ExtensionRef: &gwapiv1.LocalObjectReference{
+					Group: egv1a1.GroupName,
+					Kind:  egv1a1.KindHTTPRouteFilter,
+					Name:  gwapiv1.ObjectName(httpRouteFilterName),
+				},
+			},
+		}
+	}
+
+	return httpRoute
 }
 
 // GetGRPCRoute returns a sample GRPCRoute with a parent reference.
-func GetGRPCRoute(nsName types.NamespacedName, parent string, serviceName types.NamespacedName, port int32) *gwapiv1a2.GRPCRoute {
-	return &gwapiv1a2.GRPCRoute{
+func GetGRPCRoute(nsName types.NamespacedName, parent string, serviceName types.NamespacedName, port int32) *gwapiv1.GRPCRoute {
+	return &gwapiv1.GRPCRoute{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: nsName.Namespace,
 			Name:      nsName.Name,
 		},
-		Spec: gwapiv1a2.GRPCRouteSpec{
+		Spec: gwapiv1.GRPCRouteSpec{
 			CommonRouteSpec: gwapiv1.CommonRouteSpec{
 				ParentRefs: []gwapiv1.ParentReference{
 					{Name: gwapiv1.ObjectName(parent)},
 				},
 			},
-			Rules: []gwapiv1a2.GRPCRouteRule{
+			Rules: []gwapiv1.GRPCRouteRule{
 				{
-					BackendRefs: []gwapiv1a2.GRPCBackendRef{
+					BackendRefs: []gwapiv1.GRPCBackendRef{
 						{
 							BackendRef: gwapiv1.BackendRef{
 								BackendObjectReference: gwapiv1.BackendObjectReference{
@@ -241,11 +272,11 @@ func GetUDPRoute(nsName types.NamespacedName, parent string, serviceName types.N
 }
 
 // GetGatewayDeployment returns a sample Deployment for a Gateway object.
-func GetGatewayDeployment(nsname types.NamespacedName, labels map[string]string) *appsv1.Deployment {
+func GetGatewayDeployment(nsName types.NamespacedName, labels map[string]string) client.Object {
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: nsname.Namespace,
-			Name:      nsname.Name,
+			Namespace: nsName.Namespace,
+			Name:      nsName.Name,
 			Labels:    labels,
 		},
 		Spec: appsv1.DeploymentSpec{
@@ -268,12 +299,40 @@ func GetGatewayDeployment(nsname types.NamespacedName, labels map[string]string)
 	}
 }
 
+// GetGatewayDaemonSet returns a sample DaemonSet for a Gateway object.
+func GetGatewayDaemonSet(nsName types.NamespacedName, labels map[string]string) client.Object {
+	return &appsv1.DaemonSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: nsName.Namespace,
+			Name:      nsName.Name,
+			Labels:    labels,
+		},
+		Spec: appsv1.DaemonSetSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: labels,
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:  "dummy",
+						Image: "dummy",
+						Ports: []corev1.ContainerPort{{
+							ContainerPort: 8080,
+						}},
+					}},
+				},
+			},
+		},
+	}
+}
+
 // GetService returns a sample Service with labels and ports.
-func GetService(nsname types.NamespacedName, labels map[string]string, ports map[string]int32) *corev1.Service {
+func GetService(nsName types.NamespacedName, labels map[string]string, ports map[string]int32) *corev1.Service {
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      nsname.Name,
-			Namespace: nsname.Namespace,
+			Name:      nsName.Name,
+			Namespace: nsName.Namespace,
 			Labels:    labels,
 		},
 		Spec: corev1.ServiceSpec{
@@ -310,6 +369,27 @@ func GetEndpointSlice(nsName types.NamespacedName, svcName string) *discoveryv1.
 				Name:     &[]string{"dummy"}[0],
 				Port:     &[]int32{8080}[0],
 				Protocol: &[]corev1.Protocol{corev1.ProtocolTCP}[0],
+			},
+		},
+	}
+}
+
+// GetHTTPRouteFilter returns a sample Service with labels and ports.
+func GetHTTPRouteFilter(nsName types.NamespacedName) *egv1a1.HTTPRouteFilter {
+	return &egv1a1.HTTPRouteFilter{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      nsName.Name,
+			Namespace: nsName.Namespace,
+		},
+		Spec: egv1a1.HTTPRouteFilterSpec{
+			URLRewrite: &egv1a1.HTTPURLRewriteFilter{
+				Path: &egv1a1.HTTPPathModifier{
+					Type: egv1a1.RegexHTTPPathModifier,
+					ReplaceRegexMatch: &egv1a1.ReplaceRegexMatch{
+						Pattern:      "foo",
+						Substitution: "bar",
+					},
+				},
 			},
 		},
 	}

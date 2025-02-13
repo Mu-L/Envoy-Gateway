@@ -10,6 +10,10 @@ import (
 
 	adminv3 "github.com/envoyproxy/go-control-plane/envoy/admin/v3"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/config"
+
+	"github.com/envoyproxy/gateway/internal/envoygateway"
 )
 
 type envoyConfigType string
@@ -26,34 +30,34 @@ var (
 func findXDSResourceFromConfigDump(resourceType envoyConfigType, globalConfigs *adminv3.ConfigDump) (protoreflect.ProtoMessage, error) {
 	switch resourceType {
 	case BootstrapEnvoyConfigType:
-		for _, config := range globalConfigs.Configs {
-			if config.GetTypeUrl() == "type.googleapis.com/envoy.admin.v3.BootstrapConfigDump" {
-				return config, nil
+		for _, cfg := range globalConfigs.Configs {
+			if cfg.GetTypeUrl() == "type.googleapis.com/envoy.admin.v3.BootstrapConfigDump" {
+				return cfg, nil
 			}
 		}
 	case EndpointEnvoyConfigType:
-		for _, config := range globalConfigs.Configs {
-			if config.GetTypeUrl() == "type.googleapis.com/envoy.admin.v3.EndpointsConfigDump" {
-				return config, nil
+		for _, cfg := range globalConfigs.Configs {
+			if cfg.GetTypeUrl() == "type.googleapis.com/envoy.admin.v3.EndpointsConfigDump" {
+				return cfg, nil
 			}
 		}
 
 	case ClusterEnvoyConfigType:
-		for _, config := range globalConfigs.Configs {
-			if config.GetTypeUrl() == "type.googleapis.com/envoy.admin.v3.ClustersConfigDump" {
-				return config, nil
+		for _, cfg := range globalConfigs.Configs {
+			if cfg.GetTypeUrl() == "type.googleapis.com/envoy.admin.v3.ClustersConfigDump" {
+				return cfg, nil
 			}
 		}
 	case ListenerEnvoyConfigType:
-		for _, config := range globalConfigs.Configs {
-			if config.GetTypeUrl() == "type.googleapis.com/envoy.admin.v3.ListenersConfigDump" {
-				return config, nil
+		for _, cfg := range globalConfigs.Configs {
+			if cfg.GetTypeUrl() == "type.googleapis.com/envoy.admin.v3.ListenersConfigDump" {
+				return cfg, nil
 			}
 		}
 	case RouteEnvoyConfigType:
-		for _, config := range globalConfigs.Configs {
-			if config.GetTypeUrl() == "type.googleapis.com/envoy.admin.v3.RoutesConfigDump" {
-				return config, nil
+		for _, cfg := range globalConfigs.Configs {
+			if cfg.GetTypeUrl() == "type.googleapis.com/envoy.admin.v3.RoutesConfigDump" {
+				return cfg, nil
 			}
 		}
 	case AllEnvoyConfigType:
@@ -63,4 +67,15 @@ func findXDSResourceFromConfigDump(resourceType envoyConfigType, globalConfigs *
 	}
 
 	return nil, fmt.Errorf("unknown resourceType %s", resourceType)
+}
+
+func newK8sClient() (client.Client, error) {
+	scheme := envoygateway.GetScheme()
+
+	cli, err := client.New(config.GetConfigOrDie(), client.Options{Scheme: scheme})
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize Kubernetes client: %w", err)
+	}
+
+	return cli, nil
 }

@@ -17,6 +17,7 @@
         - name: envoy.filters.http.router
           typedConfig:
             '@type': type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+            suppressEnvoyHeaders: true
         mergeSlashes: true
         normalizePath: true
         pathWithEscapedSlashesAction: UNESCAPE_AND_REDIRECT
@@ -25,10 +26,10 @@
             ads: {}
             resourceApiVersion: V3
           routeConfigName: extension-listener
-        statPrefix: http
-        upgradeConfigs:
-        - upgradeType: websocket
+        serverHeaderTransformation: PASS_THROUGH
+        statPrefix: http-10080
         useRemoteAddress: true
+    name: extension-listener
   name: extension-listener
   perConnectionBufferLimitBytes: 32768
   statPrefix: mock-extension-inserted-prefix

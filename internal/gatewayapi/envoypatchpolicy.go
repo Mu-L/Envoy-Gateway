@@ -9,47 +9,58 @@ import (
 	"fmt"
 	"sort"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	gwv1b1 "sigs.k8s.io/gateway-api/apis/v1"
-	gwv1a2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
+	"k8s.io/apimachinery/pkg/types"
+	gwapiv1 "sigs.k8s.io/gateway-api/apis/v1"
+	gwapiv1a2 "sigs.k8s.io/gateway-api/apis/v1alpha2"
 
 	egv1a1 "github.com/envoyproxy/gateway/api/v1alpha1"
+	"github.com/envoyproxy/gateway/internal/gatewayapi/resource"
+	"github.com/envoyproxy/gateway/internal/gatewayapi/status"
 	"github.com/envoyproxy/gateway/internal/ir"
-	"github.com/envoyproxy/gateway/internal/status"
-	"github.com/envoyproxy/gateway/internal/utils/ptr"
 )
 
-func (t *Translator) ProcessEnvoyPatchPolicies(envoyPatchPolicies []*egv1a1.EnvoyPatchPolicy, xdsIR XdsIRMap) {
+func (t *Translator) ProcessEnvoyPatchPolicies(envoyPatchPolicies []*egv1a1.EnvoyPatchPolicy, xdsIR resource.XdsIRMap) {
 	// Sort based on priority
 	sort.Slice(envoyPatchPolicies, func(i, j int) bool {
 		return envoyPatchPolicies[i].Spec.Priority < envoyPatchPolicies[j].Spec.Priority
 	})
 
 	for _, policy := range envoyPatchPolicies {
-		policy := policy.DeepCopy()
-		targetNs := policy.Spec.TargetRef.Namespace
+		var (
+			policy       = policy.DeepCopy()
+			ancestorRefs []gwapiv1a2.ParentReference
+			resolveErr   *status.PolicyResolveError
+			targetKind   string
+			irKey        string
+		)
 
-		// If empty, default to namespace of policy
-		if targetNs == nil {
-			targetNs = ptr.To(gwv1b1.Namespace(policy.Namespace))
+		if t.MergeGateways {
+			targetKind = resource.KindGatewayClass
+			irKey = string(t.GatewayClassName)
+
+			ancestorRefs = []gwapiv1a2.ParentReference{
+				{
+					Group: GroupPtr(gwapiv1.GroupName),
+					Kind:  KindPtr(targetKind),
+					Name:  policy.Spec.TargetRef.Name,
+				},
+			}
+		} else {
+			targetKind = resource.KindGateway
+			gatewayNN := types.NamespacedName{
+				Namespace: policy.Namespace,
+				Name:      string(policy.Spec.TargetRef.Name),
+			}
+			// It must exist since the gateways have already been processed
+			irKey = irStringKey(gatewayNN.Namespace, gatewayNN.Name)
+
+			ancestorRefs = []gwapiv1a2.ParentReference{
+				getAncestorRefForPolicy(gatewayNN, nil),
+			}
 		}
 
-		// Get the IR
-		// It must exist since the gateways have already been processed
-		irKey := irStringKey(string(*targetNs), string(policy.Spec.TargetRef.Name))
 		gwXdsIR, ok := xdsIR[irKey]
 		if !ok {
-			// This status condition will not get updated in the resource because
-			// the IR is missing, but it has been kept here in case we publish
-			// the status from this layer instead of the xds layer.
-			message := fmt.Sprintf("Gateway:%s not found.", policy.Spec.TargetRef.Name)
-
-			status.SetEnvoyPatchPolicyCondition(policy,
-				gwv1a2.PolicyConditionAccepted,
-				metav1.ConditionFalse,
-				gwv1a2.PolicyReasonTargetNotFound,
-				message,
-			)
 			continue
 		}
 
@@ -62,31 +73,38 @@ func (t *Translator) ProcessEnvoyPatchPolicies(envoyPatchPolicies []*egv1a1.Envo
 		// Append the IR
 		gwXdsIR.EnvoyPatchPolicies = append(gwXdsIR.EnvoyPatchPolicies, &policyIR)
 
-		// Ensure policy can only target a Gateway
-		if policy.Spec.TargetRef.Group != gwv1b1.GroupName || policy.Spec.TargetRef.Kind != KindGateway {
-			message := fmt.Sprintf("TargetRef.Group:%s TargetRef.Kind:%s, only TargetRef.Group:%s and TargetRef.Kind:%s is supported.",
-				policy.Spec.TargetRef.Group, policy.Spec.TargetRef.Kind, gwv1b1.GroupName, KindGateway)
-
-			status.SetEnvoyPatchPolicyCondition(policy,
-				gwv1a2.PolicyConditionAccepted,
-				metav1.ConditionFalse,
-				gwv1a2.PolicyReasonInvalid,
-				message,
+		// Ensure EnvoyPatchPolicy is enabled
+		if !t.EnvoyPatchPolicyEnabled {
+			resolveErr = &status.PolicyResolveError{
+				Reason:  egv1a1.PolicyReasonDisabled,
+				Message: "EnvoyPatchPolicy is disabled in the EnvoyGateway configuration",
+			}
+			status.SetResolveErrorForPolicyAncestors(&policy.Status,
+				ancestorRefs,
+				t.GatewayControllerName,
+				policy.Generation,
+				resolveErr,
 			)
+
 			continue
 		}
 
-		// Ensure Policy and target Gateway are in the same namespace
-		if policy.Namespace != string(*targetNs) {
-			message := fmt.Sprintf("Namespace:%s TargetRef.Namespace:%s, EnvoyPatchPolicy can only target a Gateway in the same namespace.",
-				policy.Namespace, *targetNs)
+		// Ensure EnvoyPatchPolicy is targeting to a support type
+		if policy.Spec.TargetRef.Group != gwapiv1.GroupName || string(policy.Spec.TargetRef.Kind) != targetKind {
+			message := fmt.Sprintf("TargetRef.Group:%s TargetRef.Kind:%s, only TargetRef.Group:%s and TargetRef.Kind:%s is supported.",
+				policy.Spec.TargetRef.Group, policy.Spec.TargetRef.Kind, gwapiv1.GroupName, targetKind)
 
-			status.SetEnvoyPatchPolicyCondition(policy,
-				gwv1a2.PolicyConditionAccepted,
-				metav1.ConditionFalse,
-				gwv1a2.PolicyReasonInvalid,
-				message,
+			resolveErr = &status.PolicyResolveError{
+				Reason:  gwapiv1a2.PolicyReasonInvalid,
+				Message: message,
+			}
+			status.SetResolveErrorForPolicyAncestors(&policy.Status,
+				ancestorRefs,
+				t.GatewayControllerName,
+				policy.Generation,
+				resolveErr,
 			)
+
 			continue
 		}
 
@@ -95,19 +113,16 @@ func (t *Translator) ProcessEnvoyPatchPolicies(envoyPatchPolicies []*egv1a1.Envo
 			irPatch := ir.JSONPatchConfig{}
 			irPatch.Type = string(patch.Type)
 			irPatch.Name = patch.Name
-			irPatch.Operation.Op = string(patch.Operation.Op)
+			irPatch.Operation.Op = ir.JSONPatchOp(patch.Operation.Op)
 			irPatch.Operation.Path = patch.Operation.Path
+			irPatch.Operation.JSONPath = patch.Operation.JSONPath
+			irPatch.Operation.From = patch.Operation.From
 			irPatch.Operation.Value = patch.Operation.Value
 
 			policyIR.JSONPatches = append(policyIR.JSONPatches, &irPatch)
 		}
 
 		// Set Accepted=True
-		status.SetEnvoyPatchPolicyCondition(policy,
-			gwv1a2.PolicyConditionAccepted,
-			metav1.ConditionTrue,
-			gwv1a2.PolicyReasonAccepted,
-			"EnvoyPatchPolicy has been accepted.",
-		)
+		status.SetAcceptedForPolicyAncestors(&policy.Status, ancestorRefs, t.GatewayControllerName)
 	}
 }

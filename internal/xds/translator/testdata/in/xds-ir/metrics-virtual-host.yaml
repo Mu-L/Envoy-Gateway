@@ -3,10 +3,13 @@ metrics:
   enableVirtualHostStats: true
 http:
 - name: "first-listener"
-  address: "0.0.0.0"
+  address: "::"
   port: 10080
   hostnames:
   - "*"
+  path:
+    mergeSlashes: true
+    escapedSlashesAction: UnescapeAndRedirect
   routes:
   - name: "first-route"
     hostname: "*"

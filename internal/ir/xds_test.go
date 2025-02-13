@@ -6,128 +6,204 @@
 package ir
 
 import (
+	"encoding/json"
+	"net/http"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
 	egv1a1 "github.com/envoyproxy/gateway/api/v1alpha1"
-	"github.com/envoyproxy/gateway/internal/utils/ptr"
 )
 
 var (
 	// HTTPListener
 	happyHTTPListener = HTTPListener{
-		Name:      "happy",
-		Address:   "0.0.0.0",
-		Port:      80,
+		CoreListenerDetails: CoreListenerDetails{
+			Name:    "happy",
+			Address: "0.0.0.0",
+			Port:    80,
+		},
 		Hostnames: []string{"example.com"},
 		Routes:    []*HTTPRoute{&happyHTTPRoute},
 	}
 	happyHTTPSListener = HTTPListener{
-		Name:      "happy",
-		Address:   "0.0.0.0",
-		Port:      80,
+		CoreListenerDetails: CoreListenerDetails{
+			Name:    "happy",
+			Address: "0.0.0.0",
+			Port:    80,
+		},
 		Hostnames: []string{"example.com"},
-		TLS: []*TLSListenerConfig{{
-			Name:              "happy",
-			ServerCertificate: []byte{1, 2, 3},
-			PrivateKey:        []byte{1, 2, 3},
-		}},
+		TLS: &TLSConfig{
+			Certificates: []TLSCertificate{{
+				Name:        "happy",
+				Certificate: []byte{1, 2, 3},
+				PrivateKey:  []byte{1, 2, 3},
+			}},
+		},
+		Routes: []*HTTPRoute{&happyHTTPRoute},
+	}
+	redactedHappyHTTPSListener = HTTPListener{
+		CoreListenerDetails: CoreListenerDetails{
+			Name:    "happy",
+			Address: "0.0.0.0",
+			Port:    80,
+		},
+		Hostnames: []string{"example.com"},
+		TLS: &TLSConfig{
+			Certificates: []TLSCertificate{{
+				Name:        "happy",
+				Certificate: []byte{1, 2, 3},
+				PrivateKey:  redacted,
+			}},
+		},
 		Routes: []*HTTPRoute{&happyHTTPRoute},
 	}
 	invalidAddrHTTPListener = HTTPListener{
-		Name:      "invalid-addr",
-		Address:   "1.0.0",
-		Port:      80,
+		CoreListenerDetails: CoreListenerDetails{
+			Name:    "invalid-addr",
+			Address: "1.0.0",
+			Port:    80,
+		},
 		Hostnames: []string{"example.com"},
 		Routes:    []*HTTPRoute{&happyHTTPRoute},
 	}
 	invalidBackendHTTPListener = HTTPListener{
-		Name:      "invalid-backend-match",
-		Address:   "0.0.0.0",
-		Port:      80,
+		CoreListenerDetails: CoreListenerDetails{
+			Name:    "invalid-backend-match",
+			Address: "0.0.0.0",
+			Port:    80,
+		},
 		Hostnames: []string{"example.com"},
 		Routes:    []*HTTPRoute{&invalidBackendHTTPRoute},
 	}
 	weightedInvalidBackendsHTTPListener = HTTPListener{
-		Name:      "weighted-invalid-backends-match",
-		Address:   "0.0.0.0",
-		Port:      80,
+		CoreListenerDetails: CoreListenerDetails{
+			Name:    "weighted-invalid-backends-match",
+			Address: "0.0.0.0",
+			Port:    80,
+		},
 		Hostnames: []string{"example.com"},
 		Routes:    []*HTTPRoute{&weightedInvalidBackendsHTTPRoute},
 	}
 
 	// TCPListener
 	happyTCPListenerTLSPassthrough = TCPListener{
-		Name:        "happy",
-		Address:     "0.0.0.0",
-		Port:        80,
-		TLS:         &TLS{Passthrough: &TLSInspectorConfig{SNIs: []string{"example.com"}}},
-		Destination: &happyRouteDestination,
+		CoreListenerDetails: CoreListenerDetails{
+			Name:    "happy",
+			Address: "0.0.0.0",
+			Port:    80,
+		},
+		Routes: []*TCPRoute{&happyTCPRouteTLSPassthrough},
 	}
 
 	happyTCPListenerTLSTerminate = TCPListener{
-		Name:    "happy",
-		Address: "0.0.0.0",
-		Port:    80,
-		TLS: &TLS{Terminate: []*TLSListenerConfig{{
-			Name:              "happy",
-			ServerCertificate: []byte("server-cert"),
-			PrivateKey:        []byte("priv-key"),
-		}}},
-		Destination: &happyRouteDestination,
+		CoreListenerDetails: CoreListenerDetails{
+			Name:    "happy",
+			Address: "0.0.0.0",
+			Port:    80,
+		},
+		Routes: []*TCPRoute{&happyTCPRouteTLSTermination},
 	}
 
 	emptySNITCPListenerTLSPassthrough = TCPListener{
-		Name:        "empty-sni",
-		Address:     "0.0.0.0",
-		Port:        80,
-		Destination: &happyRouteDestination,
+		CoreListenerDetails: CoreListenerDetails{
+			Name:    "empty-sni",
+			Address: "0.0.0.0",
+			Port:    80,
+		},
+		Routes: []*TCPRoute{&emptySNITCPRoute},
 	}
 	invalidNameTCPListenerTLSPassthrough = TCPListener{
-		Address:     "0.0.0.0",
-		Port:        80,
-		TLS:         &TLS{Passthrough: &TLSInspectorConfig{SNIs: []string{"example.com"}}},
-		Destination: &happyRouteDestination,
+		CoreListenerDetails: CoreListenerDetails{
+			Address: "0.0.0.0",
+			Port:    80,
+		},
+		Routes: []*TCPRoute{&happyTCPRouteTLSPassthrough},
 	}
 	invalidAddrTCPListenerTLSPassthrough = TCPListener{
-		Name:        "invalid-addr",
-		Address:     "1.0.0",
-		Port:        80,
-		TLS:         &TLS{Passthrough: &TLSInspectorConfig{SNIs: []string{"example.com"}}},
-		Destination: &happyRouteDestination,
+		CoreListenerDetails: CoreListenerDetails{
+			Name:    "invalid-addr",
+			Address: "1.0.0",
+			Port:    80,
+		},
+		Routes: []*TCPRoute{&happyTCPRouteTLSPassthrough},
 	}
 	invalidSNITCPListenerTLSPassthrough = TCPListener{
-		Address:     "0.0.0.0",
-		Port:        80,
-		TLS:         &TLS{Passthrough: &TLSInspectorConfig{SNIs: []string{}}},
+		CoreListenerDetails: CoreListenerDetails{
+			Address: "0.0.0.0",
+			Port:    80,
+		},
+		Routes: []*TCPRoute{&invalidSNITCPRoute},
+	}
+
+	// TCPRoute
+	happyTCPRouteTLSPassthrough = TCPRoute{
+		Name:        "happy-tls-passthrough",
+		TLS:         &TLS{TLSInspectorConfig: &TLSInspectorConfig{SNIs: []string{"example.com"}}},
+		Destination: &happyRouteDestination,
+	}
+	happyTCPRouteTLSTermination = TCPRoute{
+		Name: "happy-tls-termination",
+		TLS: &TLS{Terminate: &TLSConfig{Certificates: []TLSCertificate{{
+			Name:        "happy",
+			Certificate: []byte("server-cert"),
+			PrivateKey:  []byte("priv-key"),
+		}}}},
+		Destination: &happyRouteDestination,
+	}
+	emptySNITCPRoute = TCPRoute{
+		Name:        "empty-sni",
+		Destination: &happyRouteDestination,
+	}
+
+	invalidSNITCPRoute = TCPRoute{
+		Name:        "invalid-sni",
+		TLS:         &TLS{TLSInspectorConfig: &TLSInspectorConfig{SNIs: []string{}}},
 		Destination: &happyRouteDestination,
 	}
 
 	// UDPListener
 	happyUDPListener = UDPListener{
-		Name:        "happy",
-		Address:     "0.0.0.0",
-		Port:        80,
-		Destination: &happyRouteDestination,
+		CoreListenerDetails: CoreListenerDetails{
+			Name:    "happy",
+			Address: "0.0.0.0",
+			Port:    80,
+		},
+		Route: &happyUDPRoute,
 	}
 	invalidNameUDPListener = UDPListener{
-		Address:     "0.0.0.0",
-		Port:        80,
-		Destination: &happyRouteDestination,
+		CoreListenerDetails: CoreListenerDetails{
+			Address: "0.0.0.0",
+			Port:    80,
+		},
+		Route: &happyUDPRoute,
 	}
 	invalidAddrUDPListener = UDPListener{
-		Name:        "invalid-addr",
-		Address:     "1.0.0",
-		Port:        80,
-		Destination: &happyRouteDestination,
+		CoreListenerDetails: CoreListenerDetails{
+			Name:    "invalid-addr",
+			Address: "1.0.0",
+			Port:    80,
+		},
+		Route: &happyUDPRoute,
 	}
 	invalidPortUDPListenerT = UDPListener{
-		Name:        "invalid-port",
-		Address:     "0.0.0.0",
-		Port:        0,
+		CoreListenerDetails: CoreListenerDetails{
+			Name:    "invalid-port",
+			Address: "0.0.0.0",
+			Port:    0,
+		},
+		Route: &happyUDPRoute,
+	}
+
+	// UDPRoute
+	happyUDPRoute = UDPRoute{
+		Name:        "happy",
 		Destination: &happyRouteDestination,
 	}
 
@@ -136,7 +212,7 @@ var (
 		Name:     "happy",
 		Hostname: "*",
 		PathMatch: &StringMatch{
-			Exact: ptrTo("example"),
+			Exact: ptr.To("example"),
 		},
 		Destination: &happyRouteDestination,
 	}
@@ -144,39 +220,32 @@ var (
 		Name:     "invalid-backend",
 		Hostname: "*",
 		PathMatch: &StringMatch{
-			Exact: ptrTo("invalid-backend"),
-		},
-		BackendWeights: BackendWeights{
-			Invalid: 1,
+			Exact: ptr.To("invalid-backend"),
 		},
 	}
 	weightedInvalidBackendsHTTPRoute = HTTPRoute{
 		Name:     "weighted-invalid-backends",
 		Hostname: "*",
 		PathMatch: &StringMatch{
-			Exact: ptrTo("invalid-backends"),
+			Exact: ptr.To("invalid-backends"),
 		},
 		Destination: &happyRouteDestination,
-		BackendWeights: BackendWeights{
-			Invalid: 1,
-			Valid:   1,
-		},
 	}
 
 	redirectHTTPRoute = HTTPRoute{
 		Name:     "redirect",
 		Hostname: "*",
 		PathMatch: &StringMatch{
-			Exact: ptrTo("redirect"),
+			Exact: ptr.To("redirect"),
 		},
 		Redirect: &Redirect{
-			Scheme:   ptrTo("https"),
-			Hostname: ptrTo("redirect.example.com"),
+			Scheme:   ptr.To("https"),
+			Hostname: ptr.To("redirect.example.com"),
 			Path: &HTTPPathModifier{
-				FullReplace: ptrTo("/redirect"),
+				FullReplace: ptr.To("/redirect"),
 			},
-			Port:       ptrTo(uint32(8443)),
-			StatusCode: ptrTo(int32(301)),
+			Port:       ptr.To(uint32(8443)),
+			StatusCode: ptr.To[int32](301),
 		},
 	}
 	// A direct response error is used when an invalid filter type is supplied
@@ -184,11 +253,10 @@ var (
 		Name:     "filter-error",
 		Hostname: "*",
 		PathMatch: &StringMatch{
-			Exact: ptrTo("filter-error"),
+			Exact: ptr.To("filter-error"),
 		},
-		DirectResponse: &DirectResponse{
-			Body:       ptrTo("invalid filter type"),
-			StatusCode: uint32(500),
+		DirectResponse: &CustomResponse{
+			StatusCode: ptr.To(uint32(500)),
 		},
 	}
 
@@ -196,42 +264,41 @@ var (
 		Name:     "redirect-bad-status-scheme-nopat",
 		Hostname: "*",
 		PathMatch: &StringMatch{
-			Exact: ptrTo("redirect"),
+			Exact: ptr.To("redirect"),
 		},
 		Redirect: &Redirect{
-			Scheme:     ptrTo("err"),
-			Hostname:   ptrTo("redirect.example.com"),
+			Scheme:     ptr.To("err"),
+			Hostname:   ptr.To("redirect.example.com"),
 			Path:       &HTTPPathModifier{},
-			Port:       ptrTo(uint32(8443)),
-			StatusCode: ptrTo(int32(305)),
+			Port:       ptr.To(uint32(8443)),
+			StatusCode: ptr.To[int32](305),
 		},
 	}
 	redirectFilterBadPath = HTTPRoute{
 		Name:     "redirect",
 		Hostname: "*",
 		PathMatch: &StringMatch{
-			Exact: ptrTo("redirect"),
+			Exact: ptr.To("redirect"),
 		},
 		Redirect: &Redirect{
-			Scheme:   ptrTo("https"),
-			Hostname: ptrTo("redirect.example.com"),
+			Scheme:   ptr.To("https"),
+			Hostname: ptr.To("redirect.example.com"),
 			Path: &HTTPPathModifier{
-				FullReplace:        ptrTo("/redirect"),
-				PrefixMatchReplace: ptrTo("/redirect"),
+				FullReplace:        ptr.To("/redirect"),
+				PrefixMatchReplace: ptr.To("/redirect"),
 			},
-			Port:       ptrTo(uint32(8443)),
-			StatusCode: ptrTo(int32(301)),
+			Port:       ptr.To(uint32(8443)),
+			StatusCode: ptr.To[int32](301),
 		},
 	}
 	directResponseBadStatus = HTTPRoute{
 		Name:     "redirect",
 		Hostname: "*",
 		PathMatch: &StringMatch{
-			Exact: ptrTo("redirect"),
+			Exact: ptr.To("redirect"),
 		},
-		DirectResponse: &DirectResponse{
-			Body:       ptrTo("invalid filter type"),
-			StatusCode: uint32(799),
+		DirectResponse: &CustomResponse{
+			StatusCode: ptr.To(uint32(799)),
 		},
 	}
 
@@ -239,12 +306,16 @@ var (
 		Name:     "rewrite",
 		Hostname: "*",
 		PathMatch: &StringMatch{
-			Exact: ptrTo("rewrite"),
+			Exact: ptr.To("rewrite"),
 		},
 		URLRewrite: &URLRewrite{
-			Hostname: ptrTo("rewrite.example.com"),
-			Path: &HTTPPathModifier{
-				FullReplace: ptrTo("/rewrite"),
+			Host: &HTTPHostModifier{
+				Name: ptr.To("rewrite.example.com"),
+			},
+			Path: &ExtendedHTTPPathModifier{
+				HTTPPathModifier: HTTPPathModifier{
+					FullReplace: ptr.To("/rewrite"),
+				},
 			},
 		},
 	}
@@ -253,13 +324,17 @@ var (
 		Name:     "rewrite",
 		Hostname: "*",
 		PathMatch: &StringMatch{
-			Exact: ptrTo("rewrite"),
+			Exact: ptr.To("rewrite"),
 		},
 		URLRewrite: &URLRewrite{
-			Hostname: ptrTo("rewrite.example.com"),
-			Path: &HTTPPathModifier{
-				FullReplace:        ptrTo("/rewrite"),
-				PrefixMatchReplace: ptrTo("/rewrite"),
+			Host: &HTTPHostModifier{
+				Name: ptr.To("rewrite.example.com"),
+			},
+			Path: &ExtendedHTTPPathModifier{
+				HTTPPathModifier: HTTPPathModifier{
+					FullReplace:        ptr.To("/rewrite"),
+					PrefixMatchReplace: ptr.To("/rewrite"),
+				},
 			},
 		},
 	}
@@ -268,22 +343,21 @@ var (
 		Name:     "addheader",
 		Hostname: "*",
 		PathMatch: &StringMatch{
-			Exact: ptrTo("addheader"),
+			Exact: ptr.To("addheader"),
 		},
 		AddRequestHeaders: []AddHeader{
 			{
 				Name:   "example-header",
-				Value:  "example-value",
+				Value:  []string{"example-value"},
 				Append: true,
 			},
 			{
 				Name:   "example-header-2",
-				Value:  "example-value-2",
+				Value:  []string{"example-value-2"},
 				Append: false,
 			},
 			{
 				Name:   "empty-header",
-				Value:  "",
 				Append: false,
 			},
 		},
@@ -293,7 +367,7 @@ var (
 		Name:     "remheader",
 		Hostname: "*",
 		PathMatch: &StringMatch{
-			Exact: ptrTo("remheader"),
+			Exact: ptr.To("remheader"),
 		},
 		RemoveRequestHeaders: []string{
 			"x-request-header",
@@ -306,17 +380,17 @@ var (
 		Name:     "duplicateheader",
 		Hostname: "*",
 		PathMatch: &StringMatch{
-			Exact: ptrTo("duplicateheader"),
+			Exact: ptr.To("duplicateheader"),
 		},
 		AddRequestHeaders: []AddHeader{
 			{
 				Name:   "example-header",
-				Value:  "example-value",
+				Value:  []string{"example-value"},
 				Append: true,
 			},
 			{
 				Name:   "example-header",
-				Value:  "example-value-2",
+				Value:  []string{"example-value-2"},
 				Append: false,
 			},
 		},
@@ -331,12 +405,12 @@ var (
 		Name:     "addemptyheader",
 		Hostname: "*",
 		PathMatch: &StringMatch{
-			Exact: ptrTo("addemptyheader"),
+			Exact: ptr.To("addemptyheader"),
 		},
 		AddRequestHeaders: []AddHeader{
 			{
 				Name:   "",
-				Value:  "example-value",
+				Value:  []string{"example-value"},
 				Append: true,
 			},
 		},
@@ -346,22 +420,21 @@ var (
 		Name:     "addheader",
 		Hostname: "*",
 		PathMatch: &StringMatch{
-			Exact: ptrTo("addheader"),
+			Exact: ptr.To("addheader"),
 		},
 		AddResponseHeaders: []AddHeader{
 			{
 				Name:   "example-header",
-				Value:  "example-value",
+				Value:  []string{"example-value"},
 				Append: true,
 			},
 			{
 				Name:   "example-header-2",
-				Value:  "example-value-2",
+				Value:  []string{"example-value-2"},
 				Append: false,
 			},
 			{
 				Name:   "empty-header",
-				Value:  "",
 				Append: false,
 			},
 		},
@@ -371,7 +444,7 @@ var (
 		Name:     "remheader",
 		Hostname: "*",
 		PathMatch: &StringMatch{
-			Exact: ptrTo("remheader"),
+			Exact: ptr.To("remheader"),
 		},
 		RemoveResponseHeaders: []string{
 			"x-request-header",
@@ -384,17 +457,17 @@ var (
 		Name:     "duplicateheader",
 		Hostname: "*",
 		PathMatch: &StringMatch{
-			Exact: ptrTo("duplicateheader"),
+			Exact: ptr.To("duplicateheader"),
 		},
 		AddResponseHeaders: []AddHeader{
 			{
 				Name:   "example-header",
-				Value:  "example-value",
+				Value:  []string{"example-value"},
 				Append: true,
 			},
 			{
 				Name:   "example-header",
-				Value:  "example-value-2",
+				Value:  []string{"example-value-2"},
 				Append: false,
 			},
 		},
@@ -409,12 +482,12 @@ var (
 		Name:     "addemptyheader",
 		Hostname: "*",
 		PathMatch: &StringMatch{
-			Exact: ptrTo("addemptyheader"),
+			Exact: ptr.To("addemptyheader"),
 		},
 		AddResponseHeaders: []AddHeader{
 			{
 				Name:   "",
-				Value:  "example-value",
+				Value:  []string{"example-value"},
 				Append: true,
 			},
 		},
@@ -424,14 +497,16 @@ var (
 		Name:     "jwtauthen",
 		Hostname: "*",
 		PathMatch: &StringMatch{
-			Exact: ptrTo("jwtauthen"),
+			Exact: ptr.To("jwtauthen"),
 		},
-		JWT: &JWT{
-			Providers: []egv1a1.JWTProvider{
-				{
-					Name: "test1",
-					RemoteJWKS: egv1a1.RemoteJWKS{
-						URI: "https://test1.local",
+		Security: &SecurityFeatures{
+			JWT: &JWT{
+				Providers: []JWTProvider{
+					{
+						Name: "test1",
+						RemoteJWKS: RemoteJWKS{
+							URI: "https://test1.local",
+						},
 					},
 				},
 			},
@@ -441,9 +516,13 @@ var (
 		Name:     "mirrorfilter",
 		Hostname: "*",
 		PathMatch: &StringMatch{
-			Exact: ptrTo("mirrorfilter"),
+			Exact: ptr.To("mirrorfilter"),
 		},
-		Mirrors: []*RouteDestination{&happyRouteDestination},
+		Mirrors: []*MirrorPolicy{
+			{
+				Destination: &happyRouteDestination,
+			},
+		},
 	}
 
 	// RouteDestination
@@ -461,11 +540,6 @@ var (
 		},
 	}
 )
-
-// Creates a pointer to any type
-func ptrTo[T any](x T) *T {
-	return &x
-}
 
 func TestValidateXds(t *testing.T) {
 	tests := []struct {
@@ -517,14 +591,13 @@ func TestValidateXds(t *testing.T) {
 		},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			if test.want == nil {
 				require.NoError(t, test.input.Validate())
 			} else {
 				got := test.input.Validate()
 				for _, w := range test.want {
-					assert.ErrorContains(t, got, w.Error())
+					require.ErrorContains(t, got, w.Error())
 				}
 			}
 		})
@@ -545,8 +618,10 @@ func TestValidateHTTPListener(t *testing.T) {
 		{
 			name: "invalid name",
 			input: HTTPListener{
-				Address:   "0.0.0.0",
-				Port:      80,
+				CoreListenerDetails: CoreListenerDetails{
+					Address: "0.0.0.0",
+					Port:    80,
+				},
 				Hostnames: []string{"example.com"},
 				Routes:    []*HTTPRoute{&happyHTTPRoute},
 			},
@@ -560,22 +635,23 @@ func TestValidateHTTPListener(t *testing.T) {
 		{
 			name: "invalid port and hostnames",
 			input: HTTPListener{
-				Name:    "invalid-port-and-hostnames",
-				Address: "1.0.0",
-				Routes:  []*HTTPRoute{&happyHTTPRoute},
+				CoreListenerDetails: CoreListenerDetails{
+					Name:    "invalid-port-and-hostnames",
+					Address: "1.0.0",
+				},
+				Routes: []*HTTPRoute{&happyHTTPRoute},
 			},
 			want: []error{ErrListenerPortInvalid, ErrHTTPListenerHostnamesEmpty},
 		},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			if test.want == nil {
 				require.NoError(t, test.input.Validate())
 			} else {
 				got := test.input.Validate()
 				for _, w := range test.want {
-					assert.ErrorContains(t, got, w.Error())
+					require.ErrorContains(t, got, w.Error())
 				}
 			}
 		})
@@ -591,6 +667,11 @@ func TestValidateTCPListener(t *testing.T) {
 		{
 			name:  "tls passthrough happy",
 			input: happyTCPListenerTLSPassthrough,
+			want:  nil,
+		},
+		{
+			name:  "tls terminate happy",
+			input: happyTCPListenerTLSTerminate,
 			want:  nil,
 		},
 		{
@@ -611,18 +692,17 @@ func TestValidateTCPListener(t *testing.T) {
 		{
 			name:  "tls passthrough empty SNIs",
 			input: invalidSNITCPListenerTLSPassthrough,
-			want:  []error{ErrTCPListenerSNIsEmpty},
+			want:  []error{ErrTCPRouteSNIsEmpty},
 		},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			if test.want == nil {
 				require.NoError(t, test.input.Validate())
 			} else {
 				got := test.input.Validate()
 				for _, w := range test.want {
-					assert.ErrorContains(t, got, w.Error())
+					require.ErrorContains(t, got, w.Error())
 				}
 			}
 		})
@@ -632,34 +712,39 @@ func TestValidateTCPListener(t *testing.T) {
 func TestValidateTLSListenerConfig(t *testing.T) {
 	tests := []struct {
 		name  string
-		input TLSListenerConfig
+		input TLSConfig
 		want  error
 	}{
 		{
 			name: "happy",
-			input: TLSListenerConfig{
-				ServerCertificate: []byte("server-cert"),
-				PrivateKey:        []byte("priv-key"),
+			input: TLSConfig{
+				Certificates: []TLSCertificate{{
+					Certificate: []byte("server-cert"),
+					PrivateKey:  []byte("priv-key"),
+				}},
 			},
 			want: nil,
 		},
 		{
 			name: "invalid server cert",
-			input: TLSListenerConfig{
-				PrivateKey: []byte("priv-key"),
+			input: TLSConfig{
+				Certificates: []TLSCertificate{{
+					PrivateKey: []byte("priv-key"),
+				}},
 			},
 			want: ErrTLSServerCertEmpty,
 		},
 		{
 			name: "invalid private key",
-			input: TLSListenerConfig{
-				ServerCertificate: []byte("server-cert"),
+			input: TLSConfig{
+				Certificates: []TLSCertificate{{
+					Certificate: []byte("server-cert"),
+				}},
 			},
 			want: ErrTLSPrivateKey,
 		},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			if test.want == nil {
 				require.NoError(t, test.input.Validate())
@@ -681,14 +766,14 @@ func TestEqualXds(t *testing.T) {
 			desc: "out of order tcp listeners are equal",
 			a: &Xds{
 				TCP: []*TCPListener{
-					{Name: "listener-1"},
-					{Name: "listener-2"},
+					{CoreListenerDetails: CoreListenerDetails{Name: "listener-1"}},
+					{CoreListenerDetails: CoreListenerDetails{Name: "listener-2"}},
 				},
 			},
 			b: &Xds{
 				TCP: []*TCPListener{
-					{Name: "listener-2"},
-					{Name: "listener-1"},
+					{CoreListenerDetails: CoreListenerDetails{Name: "listener-2"}},
+					{CoreListenerDetails: CoreListenerDetails{Name: "listener-1"}},
 				},
 			},
 			equal: true,
@@ -698,7 +783,7 @@ func TestEqualXds(t *testing.T) {
 			a: &Xds{
 				HTTP: []*HTTPListener{
 					{
-						Name: "listener-1",
+						CoreListenerDetails: CoreListenerDetails{Name: "listener-1"},
 						Routes: []*HTTPRoute{
 							{Name: "route-1"},
 							{Name: "route-2"},
@@ -709,7 +794,7 @@ func TestEqualXds(t *testing.T) {
 			b: &Xds{
 				HTTP: []*HTTPListener{
 					{
-						Name: "listener-1",
+						CoreListenerDetails: CoreListenerDetails{Name: "listener-1"},
 						Routes: []*HTTPRoute{
 							{Name: "route-2"},
 							{Name: "route-1"},
@@ -723,14 +808,14 @@ func TestEqualXds(t *testing.T) {
 			desc: "out of order udp listeners are equal",
 			a: &Xds{
 				UDP: []*UDPListener{
-					{Name: "listener-1"},
-					{Name: "listener-2"},
+					{CoreListenerDetails: CoreListenerDetails{Name: "listener-1"}},
+					{CoreListenerDetails: CoreListenerDetails{Name: "listener-2"}},
 				},
 			},
 			b: &Xds{
 				UDP: []*UDPListener{
-					{Name: "listener-2"},
-					{Name: "listener-1"},
+					{CoreListenerDetails: CoreListenerDetails{Name: "listener-2"}},
+					{CoreListenerDetails: CoreListenerDetails{Name: "listener-1"}},
 				},
 			},
 			equal: true,
@@ -772,14 +857,13 @@ func TestValidateUDPListener(t *testing.T) {
 		},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			if test.want == nil {
 				require.NoError(t, test.input.Validate())
 			} else {
 				got := test.input.Validate()
 				for _, w := range test.want {
-					assert.ErrorContains(t, got, w.Error())
+					require.ErrorContains(t, got, w.Error())
 				}
 			}
 		})
@@ -802,18 +886,18 @@ func TestValidateHTTPRoute(t *testing.T) {
 			input: HTTPRoute{
 				Hostname: "*",
 				PathMatch: &StringMatch{
-					Exact: ptrTo("example"),
+					Exact: ptr.To("example"),
 				},
 				Destination: &happyRouteDestination,
 			},
-			want: []error{ErrHTTPRouteNameEmpty},
+			want: []error{ErrRouteNameEmpty},
 		},
 		{
 			name: "invalid hostname",
 			input: HTTPRoute{
 				Name: "invalid hostname",
 				PathMatch: &StringMatch{
-					Exact: ptrTo("example"),
+					Exact: ptr.To("example"),
 				},
 				Destination: &happyRouteDestination,
 			},
@@ -833,10 +917,10 @@ func TestValidateHTTPRoute(t *testing.T) {
 			name: "empty name and invalid match",
 			input: HTTPRoute{
 				Hostname:      "*",
-				HeaderMatches: []*StringMatch{ptrTo(StringMatch{})},
+				HeaderMatches: []*StringMatch{ptr.To(StringMatch{})},
 				Destination:   &happyRouteDestination,
 			},
-			want: []error{ErrHTTPRouteNameEmpty, ErrStringMatchConditionInvalid},
+			want: []error{ErrRouteNameEmpty, ErrStringMatchConditionInvalid},
 		},
 		{
 			name:  "redirect-httproute",
@@ -924,7 +1008,47 @@ func TestValidateHTTPRoute(t *testing.T) {
 		},
 	}
 	for _, test := range tests {
-		test := test
+		t.Run(test.name, func(t *testing.T) {
+			if test.want == nil {
+				require.NoError(t, test.input.Validate())
+			} else {
+				got := test.input.Validate()
+				for _, w := range test.want {
+					require.ErrorContains(t, got, w.Error())
+				}
+			}
+		})
+	}
+}
+
+func TestValidateTCPRoute(t *testing.T) {
+	tests := []struct {
+		name  string
+		input TCPRoute
+		want  []error
+	}{
+		{
+			name:  "tls passthrough happy",
+			input: happyTCPRouteTLSPassthrough,
+			want:  nil,
+		},
+		{
+			name:  "tls terminatation happy",
+			input: happyTCPRouteTLSTermination,
+			want:  nil,
+		},
+		{
+			name:  "empty sni",
+			input: emptySNITCPRoute,
+			want:  nil,
+		},
+		{
+			name:  "invalid sni",
+			input: invalidSNITCPRoute,
+			want:  []error{ErrTCPRouteSNIsEmpty},
+		},
+	}
+	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			if test.want == nil {
 				require.NoError(t, test.input.Validate())
@@ -1050,7 +1174,6 @@ func TestValidateRouteDestination(t *testing.T) {
 		},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			if test.want == nil {
 				require.NoError(t, test.input.Validate())
@@ -1068,9 +1191,17 @@ func TestValidateStringMatch(t *testing.T) {
 		want  error
 	}{
 		{
-			name: "happy",
+			name: "happy exact",
 			input: StringMatch{
-				Exact: ptrTo("example"),
+				Exact: ptr.To("example"),
+			},
+			want: nil,
+		},
+		{
+			name: "happy distinct",
+			input: StringMatch{
+				Distinct: true,
+				Name:     "example",
 			},
 			want: nil,
 		},
@@ -1082,62 +1213,28 @@ func TestValidateStringMatch(t *testing.T) {
 		{
 			name: "multiple fields set",
 			input: StringMatch{
-				Exact:  ptrTo("example"),
+				Exact:  ptr.To("example"),
 				Name:   "example",
-				Prefix: ptrTo("example"),
+				Prefix: ptr.To("example"),
 			},
 			want: ErrStringMatchConditionInvalid,
 		},
+		{
+			name: "both invert and distinct fields are set",
+			input: StringMatch{
+				Distinct: true,
+				Name:     "example",
+				Invert:   ptr.To(true),
+			},
+			want: ErrStringMatchInvertDistinctInvalid,
+		},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			if test.want == nil {
 				require.NoError(t, test.input.Validate())
 			} else {
 				require.EqualError(t, test.input.Validate(), test.want.Error())
-			}
-		})
-	}
-}
-
-func TestValidateJWT(t *testing.T) {
-	tests := []struct {
-		name  string
-		input JWT
-		want  error
-	}{
-		{
-			name: "nil rules",
-			input: JWT{
-				Providers: nil,
-			},
-			want: nil,
-		},
-		{
-			name: "provider with remote jwks uri",
-			input: JWT{
-				Providers: []egv1a1.JWTProvider{
-					{
-						Name:      "test",
-						Issuer:    "https://test.local",
-						Audiences: []string{"test1", "test2"},
-						RemoteJWKS: egv1a1.RemoteJWKS{
-							URI: "https://test.local",
-						},
-					},
-				},
-			},
-			want: nil,
-		},
-	}
-	for i := range tests {
-		test := tests[i]
-		t.Run(test.name, func(t *testing.T) {
-			if test.want == nil {
-				require.NoError(t, test.input.validate())
-			} else {
-				require.EqualError(t, test.input.validate(), test.want.Error())
 			}
 		})
 	}
@@ -1157,7 +1254,7 @@ func TestValidateLoadBalancer(t *testing.T) {
 			want: nil,
 		},
 		{
-			name: "consistent hash",
+			name: "consistent hash with source IP hash policy",
 			input: LoadBalancer{
 				ConsistentHash: &ConsistentHash{
 					SourceIP: ptr.To(true),
@@ -1165,7 +1262,17 @@ func TestValidateLoadBalancer(t *testing.T) {
 			},
 			want: nil,
 		},
-
+		{
+			name: "consistent hash with header hash policy",
+			input: LoadBalancer{
+				ConsistentHash: &ConsistentHash{
+					Header: &Header{
+						Name: "name",
+					},
+				},
+			},
+			want: nil,
+		},
 		{
 			name: "least request and random set",
 			input: LoadBalancer{
@@ -1187,11 +1294,12 @@ func TestValidateLoadBalancer(t *testing.T) {
 	}
 }
 
-func TestPrintable(t *testing.T) {
+func TestRedaction(t *testing.T) {
 	tests := []struct {
-		name  string
-		input Xds
-		want  *Xds
+		name    string
+		input   Xds
+		want    *Xds
+		wantStr string
 	}{
 		{
 			name:  "empty",
@@ -1213,14 +1321,494 @@ func TestPrintable(t *testing.T) {
 				HTTP: []*HTTPListener{&happyHTTPSListener},
 			},
 			want: &Xds{
-				HTTP: []*HTTPListener{&happyHTTPListener},
+				HTTP: []*HTTPListener{&redactedHappyHTTPSListener},
 			},
+		},
+		{
+			name: "explicit string check",
+			input: Xds{
+				HTTP: []*HTTPListener{{
+					TLS: &TLSConfig{
+						Certificates: []TLSCertificate{{
+							Name:        "server",
+							Certificate: []byte("---"),
+							PrivateKey:  []byte("secret"),
+						}},
+						ClientCertificates: []TLSCertificate{{
+							Name:        "client",
+							Certificate: []byte("---"),
+							PrivateKey:  []byte("secret"),
+						}},
+					},
+					Routes: []*HTTPRoute{{
+						Security: &SecurityFeatures{
+							OIDC: &OIDC{
+								ClientSecret: []byte("secret"),
+								HMACSecret:   []byte("secret"),
+							},
+							APIKeyAuth: &APIKeyAuth{
+								Credentials: map[string]PrivateBytes{"client-id": []byte("secret")},
+							},
+							BasicAuth: &BasicAuth{
+								Users: []byte("secret"),
+							},
+						},
+					}},
+				}},
+			},
+			wantStr: `{"http":[{"name":"","address":"","port":0,"hostnames":null,` +
+				`"tls":{` +
+				`"certificates":[{"name":"server","serverCertificate":"LS0t","privateKey":"[redacted]"}],` +
+				`"clientCertificates":[{"name":"client","serverCertificate":"LS0t","privateKey":"[redacted]"}],` +
+				`"alpnProtocols":null},` +
+				`"routes":[{` +
+				`"name":"","hostname":"","isHTTP2":false,"security":{` +
+				`"oidc":{"name":"","provider":{},"clientID":"","clientSecret":"[redacted]","hmacSecret":"[redacted]"},` +
+				`"apiKeyAuth":{"credentials":{"client-id":"[redacted]"},"extractFrom":null},` +
+				`"basicAuth":{"name":"","users":"[redacted]"}` +
+				`}}],` +
+				`"isHTTP2":false,"path":{"mergeSlashes":false,"escapedSlashesAction":""}}]}`,
 		},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
-			assert.Equal(t, *test.want, *test.input.Printable())
+			if test.want != nil {
+				if test.wantStr != "" {
+					t.Fatalf("Don't set both want and wantStr")
+				}
+				wantJSON, err := json.Marshal(test.want)
+				require.NoError(t, err)
+				test.wantStr = string(wantJSON)
+			}
+			assert.Equal(t, test.wantStr, test.input.JSONString())
+		})
+	}
+}
+
+func TestValidateHealthCheck(t *testing.T) {
+	tests := []struct {
+		name  string
+		input HealthCheck
+		want  error
+	}{
+		{
+			name: "invalid timeout",
+			input: HealthCheck{
+				&ActiveHealthCheck{
+					Timeout:            &metav1.Duration{Duration: time.Duration(0)},
+					Interval:           &metav1.Duration{Duration: time.Second},
+					UnhealthyThreshold: ptr.To[uint32](3),
+					HealthyThreshold:   ptr.To[uint32](3),
+					HTTP: &HTTPHealthChecker{
+						Host:             "*",
+						Path:             "/healthz",
+						ExpectedStatuses: []HTTPStatus{200, 400},
+					},
+				}, &OutlierDetection{},
+				ptr.To[uint32](10),
+			},
+			want: ErrHealthCheckTimeoutInvalid,
+		},
+		{
+			name: "invalid panic threshold",
+			input: HealthCheck{
+				&ActiveHealthCheck{
+					Timeout:            &metav1.Duration{Duration: time.Duration(3)},
+					Interval:           &metav1.Duration{Duration: time.Second},
+					UnhealthyThreshold: ptr.To[uint32](3),
+					HealthyThreshold:   ptr.To[uint32](3),
+					HTTP: &HTTPHealthChecker{
+						Host:             "*",
+						Path:             "/healthz",
+						ExpectedStatuses: []HTTPStatus{200, 400},
+					},
+				}, &OutlierDetection{},
+				ptr.To[uint32](200),
+			},
+			want: ErrPanicThresholdInvalid,
+		},
+		{
+			name: "invalid interval",
+			input: HealthCheck{
+				&ActiveHealthCheck{
+					Timeout:            &metav1.Duration{Duration: time.Second},
+					Interval:           &metav1.Duration{Duration: time.Duration(0)},
+					UnhealthyThreshold: ptr.To[uint32](3),
+					HealthyThreshold:   ptr.To[uint32](3),
+					HTTP: &HTTPHealthChecker{
+						Host:             "*",
+						Path:             "/healthz",
+						Method:           ptr.To(http.MethodGet),
+						ExpectedStatuses: []HTTPStatus{200, 400},
+					},
+				},
+				&OutlierDetection{},
+				ptr.To[uint32](10),
+			},
+			want: ErrHealthCheckIntervalInvalid,
+		},
+		{
+			name: "invalid unhealthy threshold",
+			input: HealthCheck{
+				&ActiveHealthCheck{
+					Timeout:            &metav1.Duration{Duration: time.Second},
+					Interval:           &metav1.Duration{Duration: time.Second},
+					UnhealthyThreshold: ptr.To[uint32](0),
+					HealthyThreshold:   ptr.To[uint32](3),
+					HTTP: &HTTPHealthChecker{
+						Host:             "*",
+						Path:             "/healthz",
+						Method:           ptr.To(http.MethodPatch),
+						ExpectedStatuses: []HTTPStatus{200, 400},
+					},
+				},
+				&OutlierDetection{},
+				ptr.To[uint32](10),
+			},
+			want: ErrHealthCheckUnhealthyThresholdInvalid,
+		},
+		{
+			name: "invalid healthy threshold",
+			input: HealthCheck{
+				&ActiveHealthCheck{
+					Timeout:            &metav1.Duration{Duration: time.Second},
+					Interval:           &metav1.Duration{Duration: time.Second},
+					UnhealthyThreshold: ptr.To[uint32](3),
+					HealthyThreshold:   ptr.To[uint32](0),
+					HTTP: &HTTPHealthChecker{
+						Host:             "*",
+						Path:             "/healthz",
+						Method:           ptr.To(http.MethodPost),
+						ExpectedStatuses: []HTTPStatus{200, 400},
+					},
+				},
+				&OutlierDetection{},
+				ptr.To[uint32](10),
+			},
+			want: ErrHealthCheckHealthyThresholdInvalid,
+		},
+		{
+			name: "http-health-check: invalid host",
+			input: HealthCheck{
+				&ActiveHealthCheck{
+					Timeout:            &metav1.Duration{Duration: time.Second},
+					Interval:           &metav1.Duration{Duration: time.Second},
+					UnhealthyThreshold: ptr.To[uint32](3),
+					HealthyThreshold:   ptr.To[uint32](3),
+					HTTP: &HTTPHealthChecker{
+						Path:             "/healthz",
+						Method:           ptr.To(http.MethodPut),
+						ExpectedStatuses: []HTTPStatus{200, 400},
+					},
+				},
+				&OutlierDetection{},
+				ptr.To[uint32](10),
+			},
+			want: ErrHCHTTPHostInvalid,
+		},
+		{
+			name: "http-health-check: invalid path",
+			input: HealthCheck{
+				&ActiveHealthCheck{
+					Timeout:            &metav1.Duration{Duration: time.Second},
+					Interval:           &metav1.Duration{Duration: time.Second},
+					UnhealthyThreshold: ptr.To[uint32](3),
+					HealthyThreshold:   ptr.To[uint32](3),
+					HTTP: &HTTPHealthChecker{
+						Host:             "*",
+						Path:             "",
+						Method:           ptr.To(http.MethodPut),
+						ExpectedStatuses: []HTTPStatus{200, 400},
+					},
+				},
+				&OutlierDetection{},
+				ptr.To[uint32](10),
+			},
+			want: ErrHCHTTPPathInvalid,
+		},
+		{
+			name: "http-health-check: invalid method",
+			input: HealthCheck{
+				&ActiveHealthCheck{
+					Timeout:            &metav1.Duration{Duration: time.Second},
+					Interval:           &metav1.Duration{Duration: time.Second},
+					UnhealthyThreshold: ptr.To(uint32(3)),
+					HealthyThreshold:   ptr.To(uint32(3)),
+					HTTP: &HTTPHealthChecker{
+						Host:             "*",
+						Path:             "/healthz",
+						Method:           ptr.To(http.MethodConnect),
+						ExpectedStatuses: []HTTPStatus{200, 400},
+					},
+				},
+				&OutlierDetection{},
+				ptr.To[uint32](10),
+			},
+			want: ErrHCHTTPMethodInvalid,
+		},
+		{
+			name: "http-health-check: invalid expected-statuses",
+			input: HealthCheck{
+				&ActiveHealthCheck{
+					Timeout:            &metav1.Duration{Duration: time.Second},
+					Interval:           &metav1.Duration{Duration: time.Second},
+					UnhealthyThreshold: ptr.To(uint32(3)),
+					HealthyThreshold:   ptr.To(uint32(3)),
+					HTTP: &HTTPHealthChecker{
+						Host:             "*",
+						Path:             "/healthz",
+						Method:           ptr.To(http.MethodDelete),
+						ExpectedStatuses: []HTTPStatus{},
+					},
+				},
+				&OutlierDetection{},
+				ptr.To[uint32](10),
+			},
+			want: ErrHCHTTPExpectedStatusesInvalid,
+		},
+		{
+			name: "http-health-check: invalid range",
+			input: HealthCheck{
+				&ActiveHealthCheck{
+					Timeout:            &metav1.Duration{Duration: time.Second},
+					Interval:           &metav1.Duration{Duration: time.Second},
+					UnhealthyThreshold: ptr.To(uint32(3)),
+					HealthyThreshold:   ptr.To(uint32(3)),
+					HTTP: &HTTPHealthChecker{
+						Host:             "*",
+						Path:             "/healthz",
+						Method:           ptr.To(http.MethodHead),
+						ExpectedStatuses: []HTTPStatus{100, 600},
+					},
+				},
+				&OutlierDetection{},
+				ptr.To[uint32](10),
+			},
+			want: ErrHTTPStatusInvalid,
+		},
+		{
+			name: "http-health-check: invalid expected-responses",
+			input: HealthCheck{
+				&ActiveHealthCheck{
+					Timeout:            &metav1.Duration{Duration: time.Second},
+					Interval:           &metav1.Duration{Duration: time.Second},
+					UnhealthyThreshold: ptr.To(uint32(3)),
+					HealthyThreshold:   ptr.To(uint32(3)),
+					HTTP: &HTTPHealthChecker{
+						Host:             "*",
+						Path:             "/healthz",
+						Method:           ptr.To(http.MethodOptions),
+						ExpectedStatuses: []HTTPStatus{200, 300},
+						ExpectedResponse: &HealthCheckPayload{
+							Text:   ptr.To("foo"),
+							Binary: []byte{'f', 'o', 'o'},
+						},
+					},
+				},
+				&OutlierDetection{},
+				ptr.To[uint32](10),
+			},
+			want: ErrHealthCheckPayloadInvalid,
+		},
+		{
+			name: "tcp-health-check: invalid send payload",
+			input: HealthCheck{
+				&ActiveHealthCheck{
+					Timeout:            &metav1.Duration{Duration: time.Second},
+					Interval:           &metav1.Duration{Duration: time.Second},
+					UnhealthyThreshold: ptr.To(uint32(3)),
+					HealthyThreshold:   ptr.To(uint32(3)),
+					TCP: &TCPHealthChecker{
+						Send: &HealthCheckPayload{
+							Text:   ptr.To("foo"),
+							Binary: []byte{'f', 'o', 'o'},
+						},
+						Receive: &HealthCheckPayload{
+							Text: ptr.To("foo"),
+						},
+					},
+				},
+				&OutlierDetection{},
+				ptr.To[uint32](10),
+			},
+			want: ErrHealthCheckPayloadInvalid,
+		},
+		{
+			name: "tcp-health-check: invalid receive payload",
+			input: HealthCheck{
+				&ActiveHealthCheck{
+					Timeout:            &metav1.Duration{Duration: time.Second},
+					Interval:           &metav1.Duration{Duration: time.Second},
+					UnhealthyThreshold: ptr.To(uint32(3)),
+					HealthyThreshold:   ptr.To(uint32(3)),
+					TCP: &TCPHealthChecker{
+						Send: &HealthCheckPayload{
+							Text: ptr.To("foo"),
+						},
+						Receive: &HealthCheckPayload{
+							Text:   ptr.To("foo"),
+							Binary: []byte{'f', 'o', 'o'},
+						},
+					},
+				},
+				&OutlierDetection{},
+				ptr.To[uint32](10),
+			},
+			want: ErrHealthCheckPayloadInvalid,
+		},
+		{
+			name: "OutlierDetection invalid interval",
+			input: HealthCheck{
+				&ActiveHealthCheck{},
+				&OutlierDetection{
+					Interval:         &metav1.Duration{Duration: time.Duration(0)},
+					BaseEjectionTime: &metav1.Duration{Duration: time.Second},
+				},
+				ptr.To[uint32](10),
+			},
+			want: ErrOutlierDetectionIntervalInvalid,
+		},
+		{
+			name: "OutlierDetection invalid BaseEjectionTime",
+			input: HealthCheck{
+				&ActiveHealthCheck{},
+				&OutlierDetection{
+					Interval:         &metav1.Duration{Duration: time.Second},
+					BaseEjectionTime: &metav1.Duration{Duration: time.Duration(0)},
+				},
+				ptr.To[uint32](10),
+			},
+			want: ErrOutlierDetectionBaseEjectionTimeInvalid,
+		},
+	}
+	for i := range tests {
+		test := tests[i]
+		t.Run(test.name, func(t *testing.T) {
+			if test.want == nil {
+				require.NoError(t, test.input.Validate())
+			} else {
+				require.EqualError(t, test.input.Validate(), test.want.Error())
+			}
+		})
+	}
+}
+
+func TestJSONPatchOperationValidation(t *testing.T) {
+	tests := []struct {
+		name  string
+		input JSONPatchOperation
+		want  *string
+	}{
+		{
+			name: "no path or jsonpath",
+			input: JSONPatchOperation{
+				Op: TranslateJSONPatchOp(egv1a1.JSONPatchOperationType("remove")),
+			},
+			want: ptr.To("a patch operation must specify a path or jsonPath"),
+		},
+		{
+			name: "replace with from",
+			input: JSONPatchOperation{
+				Op:       TranslateJSONPatchOp(egv1a1.JSONPatchOperationType("replace")),
+				JSONPath: ptr.To("$.some.json[@?name=='lala'].key"),
+				Value: &apiextensionsv1.JSON{
+					Raw: []byte{},
+				},
+				From: ptr.To("/some/from"),
+			},
+			want: ptr.To("the replace operation doesn't support a from attribute"),
+		},
+		{
+			name: "add with no value",
+			input: JSONPatchOperation{
+				Op:       TranslateJSONPatchOp(egv1a1.JSONPatchOperationType("add")),
+				JSONPath: ptr.To("$.some.json[@?name=='lala'].key"),
+			},
+			want: ptr.To("the add operation requires a value"),
+		},
+		{
+			name: "remove with from",
+			input: JSONPatchOperation{
+				Op:       TranslateJSONPatchOp(egv1a1.JSONPatchOperationType("remove")),
+				JSONPath: ptr.To("$.some.json[@?name=='lala'].key"),
+				From:     ptr.To("/some/from"),
+			},
+			want: ptr.To("value and from can't be specified with the remove operation"),
+		},
+		{
+			name: "remove with value",
+			input: JSONPatchOperation{
+				Op:       TranslateJSONPatchOp(egv1a1.JSONPatchOperationType("remove")),
+				JSONPath: ptr.To("$.some.json[@?name=='lala'].key"),
+				Value: &apiextensionsv1.JSON{
+					Raw: []byte{},
+				},
+			},
+			want: ptr.To("value and from can't be specified with the remove operation"),
+		},
+		{
+			name: "move without from",
+			input: JSONPatchOperation{
+				Op:       TranslateJSONPatchOp(egv1a1.JSONPatchOperationType("move")),
+				JSONPath: ptr.To("$.some.json[@?name=='lala'].key"),
+			},
+			want: ptr.To("the move operation requires a valid from attribute"),
+		},
+		{
+			name: "copy with value",
+			input: JSONPatchOperation{
+				Op:       TranslateJSONPatchOp(egv1a1.JSONPatchOperationType("copy")),
+				JSONPath: ptr.To("$.some.json[@?name=='lala'].key"),
+				From:     ptr.To("/some/from"),
+				Value: &apiextensionsv1.JSON{
+					Raw: []byte{},
+				},
+			},
+			want: ptr.To("the copy operation doesn't support a value attribute"),
+		},
+		{
+			name: "invalid operation",
+			input: JSONPatchOperation{
+				Op:   TranslateJSONPatchOp(egv1a1.JSONPatchOperationType("invalid")),
+				Path: ptr.To("/some/path"),
+			},
+			want: ptr.To("unsupported JSONPatch operation"),
+		},
+		{
+			name: "valid test operation",
+			input: JSONPatchOperation{
+				Op:   TranslateJSONPatchOp(egv1a1.JSONPatchOperationType("test")),
+				Path: ptr.To("/some/path"),
+				Value: &apiextensionsv1.JSON{
+					Raw: []byte{},
+				},
+			},
+		},
+		{
+			name: "valid remove operation",
+			input: JSONPatchOperation{
+				Op:   TranslateJSONPatchOp(egv1a1.JSONPatchOperationType("remove")),
+				Path: ptr.To("/some/path"),
+			},
+		},
+		{
+			name: "valid copy operation",
+			input: JSONPatchOperation{
+				Op:   TranslateJSONPatchOp(egv1a1.JSONPatchOperationType("copy")),
+				Path: ptr.To("/some/path"),
+				From: ptr.To("/some/other/path"),
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.input.Validate()
+			if tc.want != nil {
+				require.EqualError(t, err, *tc.want)
+			} else {
+				require.NoError(t, err)
+			}
 		})
 	}
 }
